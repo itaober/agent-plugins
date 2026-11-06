@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npm i -g @anthropic-ai/claude-code
+      # No login needed: validate and test run offline against the CLI's own engine.
+      # No tsc here: its types are written by Claude Code only when a session loads the plugin, which CI never does.
+      - run: claude plugin validate .
+      - run: claude plugin validate plugins/inline-images
+      - run: claude plugin test plugins/inline-images
+      - run: claude plugin validate plugins/panel
+      - run: claude plugin test plugins/panel
+      # The public rules only; catches what a contributor without the pre-commit hook let through
+      - run: git ls-files -z | xargs -0 python3 scripts/guard.py

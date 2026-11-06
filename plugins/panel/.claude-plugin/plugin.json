@@ -1,0 +1,105 @@
+{
+  "name": "panel",
+  "version": "0.4.0",
+  "description": "A side pane with this session's directory and usage, subagents, GitHub PRs / issues / repos and links; /panel toggles it",
+  "author": { "name": "itaober", "url": "https://github.com/itaober" },
+  "homepage": "https://github.com/itaober/agent-plugins",
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "showSession": {
+      "type": "boolean",
+      "title": "Show session",
+      "description": "Directory, model, context and usage at the top",
+      "default": true
+    },
+    "showAgents": {
+      "type": "boolean",
+      "title": "Show agents",
+      "description": "Subagents, forks and teammates",
+      "default": true
+    },
+    "showGit": {
+      "type": "boolean",
+      "title": "Show GitHub",
+      "description": "PRs, issues and repo links seen in this session",
+      "default": true
+    },
+    "showLinks": {
+      "type": "boolean",
+      "title": "Show links",
+      "description": "Other links seen in this session",
+      "default": true
+    },
+    "width": {
+      "type": "number",
+      "title": "Width",
+      "description": "Columns the panel asks for when docked",
+      "default": 46
+    },
+    "autoOpen": {
+      "type": "boolean",
+      "title": "Open on start",
+      "description": "Open the panel when a session starts, unless /panel last closed it",
+      "default": true
+    },
+    "visibleRows": {
+      "type": "number",
+      "title": "Visible rows",
+      "description": "Rows per section or tab before \"+N more\"",
+      "default": 6
+    },
+    "tabThreshold": {
+      "type": "number",
+      "title": "Links tab threshold",
+      "description": "Links from one site needed to give that site its own tab",
+      "default": 3
+    },
+    "ghRefreshSeconds": {
+      "type": "number",
+      "title": "GitHub refresh",
+      "description": "Seconds between gh checks of open PRs and issues; 0 checks each once",
+      "default": 60
+    },
+    "agentsKeep": {
+      "type": "number",
+      "title": "Agents keep",
+      "description": "Minutes a finished agent keeps its own row (failed: 6x) before folding into the summary; 0 never folds",
+      "default": 10
+    },
+    "gitSort": {
+      "type": "string",
+      "title": "GitHub order",
+      "description": "PRs and issues; attention: needs action first; recent: as seen; repo: grouped by repository",
+      "options": [
+        "attention",
+        "recent",
+        "repo"
+      ],
+      "default": "attention"
+    },
+    "sessionLines": {
+      "type": "string",
+      "title": "Session lines",
+      "description": "Comma list, in order: dir (with git branch), model, context, 5h, week",
+      "default": "dir,model,context,5h,week"
+    },
+    "sessionBars": {
+      "type": "boolean",
+      "title": "Session bars",
+      "description": "A 10-cell bar before each percentage",
+      "default": true
+    },
+    "sessionTheme": {
+      "type": "string",
+      "title": "Session colors",
+      "description": "gruvbox; hud: claude-hud defaults; terminal: follows the Claude theme",
+      "options": [
+        "gruvbox",
+        "hud",
+        "terminal"
+      ],
+      "default": "gruvbox"
+    }
+  }
+}

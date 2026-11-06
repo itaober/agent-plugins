@@ -1,0 +1,5 @@
+# Written by Claude Code each time it loads a plugin from disk
+plugins/*/.claude-plugin/types/
+plugins/*/tsconfig.json
+node_modules/
+.DS_Store

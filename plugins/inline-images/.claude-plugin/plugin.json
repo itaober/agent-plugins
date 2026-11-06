@@ -1,0 +1,16 @@
+{
+  "name": "inline-images",
+  "version": "0.2.0",
+  "description": "Draw PNG screenshots inline in the transcript, stacked or side by side (kitty / Ghostty)",
+  "author": { "name": "itaober", "url": "https://github.com/itaober" },
+  "homepage": "https://github.com/itaober/agent-plugins",
+  "license": "MIT",
+  "userConfig": {
+    "force": {
+      "type": "boolean",
+      "title": "Force",
+      "description": "Offer the tool even when the terminal is not detected as kitty or Ghostty",
+      "default": false
+    }
+  }
+}

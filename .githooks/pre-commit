@@ -1,0 +1,3 @@
+#!/bin/sh
+# Last privacy check before anything can reach the public remote; see scripts/guard.py
+exec python3 scripts/guard.py --staged

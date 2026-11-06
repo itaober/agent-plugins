@@ -1,0 +1,17 @@
+{
+  "name": "itaober",
+  "description": "Claude Code plugins by itaober",
+  "owner": { "name": "itaober", "url": "https://github.com/itaober" },
+  "plugins": [
+    {
+      "name": "inline-images",
+      "source": "./plugins/inline-images",
+      "description": "Draw PNG screenshots inline in the transcript, stacked or side by side (kitty / Ghostty)"
+    },
+    {
+      "name": "panel",
+      "source": "./plugins/panel",
+      "description": "A side pane with the session, subagents, GitHub PRs / issues and links at a glance; /panel toggles it"
+    }
+  ]
+}
