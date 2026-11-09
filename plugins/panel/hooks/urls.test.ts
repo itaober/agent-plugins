@@ -136,6 +136,7 @@ test('rebuilds urls from the transcript by the same rules, subagents only throug
         { tool_use_id: 't3', tool: 'Read', input: {}, text: 'https://docs.dev/read' },
         { tool_use_id: 't4', tool: 'mcp__slack__send', input: {}, text: 'sent https://acme.slack.com/archives/C1/p2' },
         { tool_use_id: 't5', tool: 'Agent', input: {}, agentId: 'a1', text: 'report https://docs.dev/report' },
+        { tool_use_id: 't6', tool: 'mcp__claude-in-chrome__navigate', input: {}, text: 'Navigated to https://grafana.acme.dev/login' },
       ],
     },
     { role: 'user', text: '', toolUses: [], toolResults: [] },

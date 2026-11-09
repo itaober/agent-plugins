@@ -32,13 +32,15 @@ const isNoise = (host: string) =>
  * Read / Grep / WebFetch / Agent / plain Bash results hold source, docs and reports, and are never collected.
  */
 export const PRODUCER_TOOL_RE = /^(?:Artifact$|mcp__)/
+/** Browser automation is reading, like WebFetch: pages it navigated (logins, consoles, search results) are not links it produced, and their results carry no description but host/path */
+const BROWSER_TOOL_RE = /^mcp__(?:claude-in-chrome|browseros|chrome-devtools|playwright|puppeteer)__/
 /** gh commands that act on a PR / issue: only these Bash calls' results contribute PRs / issues; echo, cat and test output do not. */
 /** gh must start a command (or follow && ; |); commands carrying gh as a string, like `grep "gh pr create" …`, do not count */
 export const GH_RE = /(?:^|[;&|(]\s*|\bcd\s+\S+\s*&&\s*)gh\s+(pr|issue)\s+(create|view|merge|comment|checks|review|edit|close|reopen|ready|diff|status|list)\b/
 /** Blocks the engine injects next to a prompt (reminders, notifications, teammate messages) are not yours and are stripped when rebuilding; a row's isMeta is not visible on SessionMessage */
 const INJECTED_RE = /<(system-reminder|task-notification|teammate-message|local-command-stdout|local-command-stderr)\b[^>]*>[\s\S]*?<\/\1>/g
 
-const isProducer = (tool: string | undefined) => tool !== undefined && PRODUCER_TOOL_RE.test(tool)
+const isProducer = (tool: string | undefined) => tool !== undefined && PRODUCER_TOOL_RE.test(tool) && !BROWSER_TOOL_RE.test(tool)
 
 /**
  * The sentence before a URL: same line only, after the previous URL, with tails like "see / link / :" and markdown marks removed, at most 24 characters.
