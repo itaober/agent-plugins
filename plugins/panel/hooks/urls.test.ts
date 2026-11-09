@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import type { SessionMessage } from 'claude-code'
 
-import { extract, fromGh, GH_RE, merge, sentenceBefore, siteOf, textOf, urlsFromMessages } from './sources/urls'
+import { ADD_TOOL, addedEntry, cleanTitle, descOf, extract, fromGh, GH_RE, merge, needsTitle, sentenceBefore, siteOf, textOf, urlsFromMessages } from './sources/urls'
 
 test('takes the markdown text as the description', async () => {
   const [entry] = extract('Plan: [Sidebar plugin plan](https://claude.ai/code/artifact/abc)')
@@ -182,4 +182,49 @@ test('groups a link by its main domain, with Artifact and local as their own sit
   expect(site('http://127.0.0.1:8080/')).toEqual({ key: 'local', label: 'Local' })
   expect(site('https://figma.com/file/1')).toEqual({ key: 'figma.com', label: 'Figma' })
   expect(site('https://linear.app/acme/issue/A-1')).toEqual({ key: 'linear.app', label: 'Linear' })
+})
+
+test('takes a model reply as a title only when it reads as one', async () => {
+  const url = 'https://acme.slack.com/archives/C1/p2'
+  expect(cleanTitle('"Rate limit discussion."\nextra', url)).toBe('Rate limit discussion')
+  expect(cleanTitle('one two three four five six seven eight nine ten', url)).toBe('one two three four five six seven eight')
+  expect(cleanTitle('\u300c\u56de\u590d\u9f99\u9f99\uff1a\u5d29\u6e83\u7edf\u8ba1\u5df2\u4e0a\u7ebf\u300d', url)).toBe('\u56de\u590d\u9f99\u9f99\uff1a\u5d29\u6e83\u7edf\u8ba1\u5df2\u4e0a\u7ebf')
+  expect(cleanTitle('See https://x.dev', url)).toBeUndefined()
+  expect(cleanTitle('acme.slack.com thread', url)).toBeUndefined()
+  expect(cleanTitle('  ', url)).toBeUndefined()
+})
+
+test('add_link input: http(s) with a title, GitHub links still to GitHub', async () => {
+  expect(addedEntry('https://docs.dev/a ', 'Spec')).toEqual({ key: 'https://docs.dev/a', url: 'https://docs.dev/a', desc: 'Spec', rank: 0 })
+  expect(addedEntry('file:///etc/hosts', 'x')).toContain('Only http(s)')
+  expect(addedEntry('not a url', 'x')).toContain('Not a URL')
+  expect(addedEntry('https://docs.dev/a', ' ')).toBe('A title is required')
+  expect(addedEntry('https://github.com/a/b/pull/3', 'x')).toMatchObject({ key: 'a/b/pull/3', git: { kind: 'pr' } })
+  // Asked-for and weak descriptions: only the weak ones take a model title
+  expect(needsTitle({ key: 'k', url: 'https://x.dev', desc: 'x', rank: 0 })).toBe(false)
+  expect(descOf({ key: 'k', url: 'https://x.dev', desc: 'x.dev', rank: 4 }, { k: 'Title' })).toBe('Title')
+  expect(descOf({ key: 'k', url: 'https://x.dev', desc: 'Label', rank: 1 }, { k: 'Title' })).toBe('Label')
+})
+
+test('a rebuild keeps add_link entries and notes each link context', async () => {
+  const messages: SessionMessage[] = [
+    { role: 'user', text: 'the thread https://acme.slack.com/archives/C1/p2', toolUses: [] },
+    {
+      role: 'assistant',
+      text: '',
+      toolUses: [
+        { tool_use_id: 't1', tool: ADD_TOOL, input: { url: 'https://docs.dev/report', title: 'Crash report' }, text: 'Added' },
+        { tool_use_id: 't2', tool: 'mcp__slack__send_message', input: { message: 'stats live' }, text: 'https://acme.slack.com/archives/C1/p9' },
+      ],
+    },
+  ]
+  const contexts = new Map<string, string>()
+  const list = urlsFromMessages(messages, new Map(), contexts)
+  expect(list.map(u => [u.desc, u.rank])).toEqual([
+    ['Slack thread', 4],
+    ['Crash report', 0],
+    ['the thread', 3],
+  ])
+  expect(contexts.get('https://acme.slack.com/archives/C1/p2')).toBe('the thread https://acme.slack.com/archives/C1/p2')
+  expect(contexts.get('https://acme.slack.com/archives/C1/p9')).toContain('stats live')
 })

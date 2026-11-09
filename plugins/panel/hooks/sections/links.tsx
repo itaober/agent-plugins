@@ -1,7 +1,7 @@
 import type { FoldId, UrlEntry } from '../../types'
 import { activeTab, fit, GLYPH, item, tabs, withMore } from '../section'
 import type { Block, SectionMeta, TabItem, View } from '../section'
-import { siteOf } from '../sources/urls'
+import { descOf, siteOf } from '../sources/urls'
 
 const LIMIT = 30
 const OTHERS = 'others'
@@ -9,14 +9,21 @@ const OTHERS = 'others'
 export const meta: SectionMeta = { id: 'links', title: 'Links' }
 
 /**
- * Reads urls minus GitHub's (every link under a github.com repo belongs to the GitHub section) and the ones dismissed with ×. Two lines: description … copy ×; then the full URL, cut at the end if it does not fit.
+ * Reads urls minus GitHub's (every link under a github.com repo belongs to the GitHub section) and the ones dismissed with ×. Two lines: description (a model title over a weak one, descOf) … copy ×; then the full URL, cut at the end if it does not fit.
  * Grouped by site (siteOf): a site with view.tabThreshold or more links gets its own tab, bigger first, the rest go to Others (always last); with no site that big there is no tab row and the list stays flat.
  * Tabs and "+N more" are drawn as in GitHub; if the selected tab disappears, the first with rows takes over.
  */
-export function render(view: View, list: UrlEntry[], dismissed: readonly string[], selected: string, expanded: readonly FoldId[]): Block {
+export function render(
+  view: View,
+  list: UrlEntry[],
+  titles: Readonly<Record<string, string>>,
+  dismissed: readonly string[],
+  selected: string,
+  expanded: readonly FoldId[],
+): Block {
   const shown = list.filter(u => !u.git && !dismissed.includes(u.key)).slice(0, LIMIT)
   const draw = (u: UrlEntry) =>
-    item(view, { key: `link-${u.key}`, icon: { glyph: GLYPH.link, tone: 'dim' }, title: u.desc, href: u.url, sub: fit(u.url, view.columns - 2), link: u })
+    item(view, { key: `link-${u.key}`, icon: { glyph: GLYPH.link, tone: 'dim' }, title: descOf(u, titles), href: u.url, sub: fit(u.url, view.columns - 2), link: u })
 
   const sites = shown.map(u => siteOf(new URL(u.url)))
   const counts = new Map<string, number>()

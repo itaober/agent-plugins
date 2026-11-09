@@ -9,9 +9,11 @@ A pane beside the chat that shows what this session is doing.
 | Session | Directory, git branch, model and effort, context, 5-hour and weekly usage with reset times |
 | Agents | Main thread and every subagent: state, duration, output tokens, model, effort |
 | GitHub | PRs / issues you pasted or `gh` touched, with live status; tabs for PR, Issue, Others |
-| Links | Links you pasted or a tool published (Artifacts, MCP results, dev servers), tabbed by site |
+| Links | Links you pasted or a tool published (Artifacts, MCP results, dev servers), tabbed by site; untitled ones get a short Haiku-written title from what came with them |
 
 Hover a row for copy and ×. Section titles fold.
+
+Ask Claude to put any link into the panel ("put this link in the panel") and it calls the plugin's `add_link` tool, filing it at the top of Links with a summary title.
 
 ## Install
 

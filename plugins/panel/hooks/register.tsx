@@ -24,6 +24,7 @@ const demo = atom({ plugin: 'panel', key: 'demo' } as const, false)
 const sessionInfo = atom({ plugin: 'panel', key: 'session' } as const, { dir: '', model: '' })
 const agents = atom({ plugin: 'panel', key: 'agents' } as const, [])
 const urls = atom({ plugin: 'panel', key: 'urls' } as const, [])
+const titles = atom({ plugin: 'panel', key: 'titles' } as const, {})
 const gitStatus = atom({ plugin: 'panel', key: 'gitStatus' } as const, {})
 const tick = atom({ plugin: 'panel', key: 'tick' } as const, 0)
 const copied = atom({ plugin: 'panel', key: 'copied' } as const, null)
@@ -164,7 +165,7 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button } = t
     // Reading subscribes: whichever atom changes triggers a redraw
     // tick is subscribed, not used: its value may be from the last run, durations come from the current time
-    const [folded, more, gone, session, agentList, urlList, known, , justCopied, now, tab, siteTab, isDemo] = await Promise.all([
+    const [folded, more, gone, session, agentList, urlList, known, , justCopied, now, tab, siteTab, isDemo, titled] = await Promise.all([
       read($, collapsed),
       read($, expanded),
       read($, dismissed),
@@ -178,8 +179,9 @@ export const register: Register = (on, options) => {
       read($, gitTab),
       read($, linksTab),
       read($, demo),
+      read($, titles),
     ])
-    const data = isDemo ? demoData(now) : { session, agents: agentList, urls: urlList, gitStatus: known }
+    const data = isDemo ? { ...demoData(now), titles: {} } : { session, agents: agentList, urls: urlList, gitStatus: known, titles: titled }
     const actions: RowActions = {
       copy: (url, key, surface) => void copyUrl($, url, key, surface),
       dismiss: key => void dismissUrl($, key),
@@ -222,7 +224,7 @@ export const register: Register = (on, options) => {
         }),
       },
       { ...gitMeta, block: renderGit(view, data.urls, data.gitStatus, gone, show.gitSort, tab, more) },
-      { ...linksMeta, block: renderLinks(view, data.urls, gone, siteTab, more) },
+      { ...linksMeta, block: renderLinks(view, data.urls, data.titles, gone, siteTab, more) },
     ].filter(s => show[s.id])
     return (
       <Box flexDirection="column">

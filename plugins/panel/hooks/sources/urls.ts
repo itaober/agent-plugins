@@ -1,9 +1,12 @@
-import { atom, update } from 'claude-code'
-import type { On, SessionMessage } from 'claude-code'
+import { atom, read, update } from 'claude-code'
+import type { EngineInterface, On, SessionMessage } from 'claude-code'
 
 import type { UrlEntry } from '../../types'
 
 const urls = atom({ plugin: 'panel', key: 'urls' } as const, [])
+const titles = atom({ plugin: 'panel', key: 'titles' } as const, {})
+// Owned by register.tsx; declared again here so add_link can bring back a link hidden earlier
+const dismissed = atom({ plugin: 'panel', key: 'dismissed' } as const, [])
 
 const LIMIT = 200
 /** Page assets and spec sites: they show up in source and docs, not as links you would open, so they are never collected. */
@@ -40,7 +43,11 @@ export const GH_RE = /(?:^|[;&|(]\s*|\bcd\s+\S+\s*&&\s*)gh\s+(pr|issue)\s+(creat
 /** Blocks the engine injects next to a prompt (reminders, notifications, teammate messages) are not yours and are stripped when rebuilding; a row's isMeta is not visible on SessionMessage */
 const INJECTED_RE = /<(system-reminder|task-notification|teammate-message|local-command-stdout|local-command-stderr)\b[^>]*>[\s\S]*?<\/\1>/g
 
-const isProducer = (tool: string | undefined) => tool !== undefined && PRODUCER_TOOL_RE.test(tool) && !BROWSER_TOOL_RE.test(tool)
+/** The panel's own tool: the model files a link the person asked for, with its title */
+export const ADD_TOOL = 'mcp__panel__add_link'
+
+const isProducer = (tool: string | undefined) =>
+  tool !== undefined && tool !== ADD_TOOL && PRODUCER_TOOL_RE.test(tool) && !BROWSER_TOOL_RE.test(tool)
 
 /**
  * The sentence before a URL: same line only, after the previous URL, with tails like "see / link / :" and markdown marks removed, at most 24 characters.
@@ -209,6 +216,10 @@ export function fromGh(command: string, output: string): UrlEntry[] {
 /** Links one tool call produced: gh commands contribute PRs / issues only; producer tools' results get site fallback descriptions; nothing else counts. */
 function fromToolUse(u: SessionMessage['toolUses'][number]) {
   if (u.tool === 'Bash') return typeof u.input.command === 'string' ? fromGh(u.input.command, u.text ?? '') : []
+  if (u.tool === ADD_TOOL) {
+    const added = addedEntry(u.input.url, u.input.title)
+    return typeof added === 'string' ? [] : [added]
+  }
   return isProducer(u.tool) ? extract(u.text ?? '', false) : []
 }
 
@@ -216,11 +227,23 @@ function fromToolUse(u: SessionMessage['toolUses'][number]) {
  * Rebuilds urls from the conversation by the same rules as live collection: merged message by message in time order, newest first.
  * The main conversation contributes your prompts (user rows' text; tool result rows have none), gh commands and producer tools; subagents contribute gh commands only.
  */
-export function urlsFromMessages(messages: readonly SessionMessage[], children: ReadonlyMap<string, readonly SessionMessage[]>) {
+export function urlsFromMessages(
+  messages: readonly SessionMessage[],
+  children: ReadonlyMap<string, readonly SessionMessage[]>,
+  /** Filled with the text each link came with, for titling what has no title yet */
+  contexts?: Map<string, string>,
+) {
   let list: UrlEntry[] = []
+  const note = (found: UrlEntry[], context: string) => {
+    for (const u of found) if (!contexts?.has(u.key)) contexts?.set(u.key, context)
+    return found
+  }
   for (const m of messages) {
-    if (m.role === 'user') list = merge(list, extract(m.text.replace(INJECTED_RE, '')))
-    list = merge(list, m.toolUses.flatMap(fromToolUse))
+    if (m.role === 'user') {
+      const prompt = m.text.replace(INJECTED_RE, '')
+      list = merge(list, note(extract(prompt), prompt))
+    }
+    list = merge(list, m.toolUses.flatMap(u => note(fromToolUse(u), producerContext(u.input, u.text))))
     for (const use of m.toolUses) {
       const child = use.agentId ? children.get(use.agentId) : undefined
       for (const c of child ?? []) {
@@ -231,22 +254,119 @@ export function urlsFromMessages(messages: readonly SessionMessage[], children: 
   return list
 }
 
-/** The session's only URL scanner: what you pasted, what gh acted on, what producer tools returned; assistant replies and other tool results are not collected. */
+/** Model titles replace only the weak descriptions (preceding sentence, site fallback); labels, file names, asked-for titles and GitHub stay. */
+export const needsTitle = (u: UrlEntry) => !u.git && u.rank >= 3
+
+/** What a link reads as: its model title when it has one and its own description is weak. */
+export const descOf = (u: UrlEntry, known: Readonly<Record<string, string>>) => (needsTitle(u) && known[u.key]) || u.desc
+
+/** A producer call's context: what it was asked to do (Slack message, Notion title / content) and what it answered. */
+function producerContext(input: Readonly<Record<string, unknown>>, text = '') {
+  return `Tool input: ${JSON.stringify(input).slice(0, 1500)}\nTool result: ${text.slice(0, 1500)}`
+}
+
+const TITLE_RULES = [
+  'You title links for a sidebar list, like a chat session title: say what the link is, judged from the context it came with.',
+  'Reply with the title alone on one line: at most 18 CJK characters or 8 English words, in the language of the context, no URL, host or domain, no quotes, no trailing punctuation.',
+  'A message someone sent: its gist with the recipient, e.g. \u56de\u590d\u9f99\u9f99\uff1a\u5d29\u6e83\u7edf\u8ba1\u5df2\u4e0a\u7ebf. A pasted link: what the user said about it.',
+].join('\n')
+
+/** The model's reply as a title, or undefined when it is empty or reads as a URL; cut as a backstop if it ran long. */
+export function cleanTitle(reply: string, url: string) {
+  const line = (reply.trim().split('\n')[0] ?? '').replace(/^["'\u201c\u2018\u300c\u300a]+|["'\u201d\u2019\u300d\u300b.\u3002!\uff01]+$/g, '').trim()
+  const host = new URL(url).hostname.replace(/^www\./, '')
+  if (!line || /https?:|www\./i.test(line) || line.toLowerCase().includes(host.toLowerCase())) return undefined
+  return /[\u3000-\u9fff\uff00-\uffef]/.test(line) ? [...line].slice(0, 24).join('') : line.split(/\s+/).slice(0, 8).join(' ')
+}
+
+// ponytail: in-flight titles are tracked in the module, like git's inFlight; a reload mid-call costs at most one extra call
+const titling = new Set<string>()
+
+/** One haiku call per untitled link; a failure leaves the old description in place and the next scan may try again. */
+async function titleLinks($: EngineInterface, due: readonly { entry: UrlEntry; context: string }[]) {
+  const known = await read($, titles)
+  await Promise.all(
+    due
+      .filter(({ entry, context }) => needsTitle(entry) && !known[entry.key] && !titling.has(entry.key) && context.trim())
+      .map(async ({ entry, context }) => {
+        titling.add(entry.key)
+        try {
+          const reply = await $.model.complete({
+            model: 'haiku',
+            system: TITLE_RULES,
+            prompt: `Link: ${entry.url}\n\nContext:\n${context.slice(0, 3000)}`,
+            maxTokens: 64,
+            effort: 'low',
+            timeoutMs: 15_000,
+          })
+          const title = reply.isAnswered ? cleanTitle(reply.text, entry.url) : undefined
+          if (title) await update($, titles, all => ({ ...all, [entry.key]: title }))
+        } catch {
+          // A refused request (model blocked by policy): keep the old description, no toast
+        } finally {
+          titling.delete(entry.key)
+        }
+      }),
+  )
+}
+
+/** On a timer, so the row or tool call that found the links is not held up by the model. */
+function titleLater($: EngineInterface, found: readonly UrlEntry[], context: string) {
+  if (found.some(needsTitle)) $.clock.after(1, () => void titleLinks($, found.map(entry => ({ entry, context }))))
+}
+
+/** add_link's input as an entry, or why it is refused: http(s) only; GitHub links go to the GitHub section as they would pasted. */
+export function addedEntry(url: unknown, title: unknown): UrlEntry | string {
+  const raw = typeof url === 'string' ? url.trim() : ''
+  let parsed: URL
+  try {
+    parsed = new URL(raw)
+  } catch {
+    return `Not a URL: ${raw}`
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return `Only http(s) links can go into the panel: ${raw}`
+  const desc = typeof title === 'string' ? [...title.trim()].slice(0, 80).join('') : ''
+  if (!desc) return 'A title is required'
+  return githubEntry(raw, parsed) ?? { key: raw, url: raw, desc, rank: 0 }
+}
+
+const ADD_DESCRIPTION = [
+  "Put a link into the panel's Links list, at the top, with a title.",
+  'Call it only when the user explicitly asks to put a link into the panel (e.g. "\u628a\u8fd9\u4e2a\u94fe\u63a5\u653e\u8fdb panel", "\u653e\u8fdb\u53bb"), including links that only appear in your own replies (reports, previews).',
+  'title: a short summary of what the link is, like a session title: at most 18 CJK characters or 8 English words, in the language of the conversation, no URL or host.',
+].join(' ')
+
+/** The session's only URL scanner: what you pasted, what gh acted on, what producer tools returned, what you asked add_link to file; assistant replies and other tool results are not collected. */
 export function register(on: On) {
-  // Your prompts and producer tools' results. Subagent rows are skipped (their gh commands go through tool.call below); Bash result rows are judged in tool.call, where the command is visible
-  on('session.append', { door: ['prompt', 'tool-result'] }, async ($, e, next) => {
-    if (e.agentId) return next(e)
-    const isPrompt = e.door === 'prompt' && !e.message.isMeta
-    const isProduced = e.door === 'tool-result' && e.origin.kind === 'tool' && isProducer(e.origin.tool)
-    if (!isPrompt && !isProduced) return next(e)
-    // Tool result text is not prose: descriptions fall back to the site only
-    const found = extract(textOf(e.message.content), isPrompt)
+  // Your prompts. Subagent rows are skipped (their gh commands go through tool.call below); tool results are judged in tool.call, where the input is visible
+  on('session.append', { door: 'prompt' }, async ($, e, next) => {
+    if (e.agentId || e.message.isMeta) return next(e)
+    const prompt = textOf(e.message.content).replace(INJECTED_RE, '')
+    const found = extract(prompt)
     // Write before next: the git section's session.append in this plugin reads the new entries after next returns, whichever layer it sits on
-    if (found.length > 0) await update($, urls, list => merge(list, found))
+    if (found.length > 0) {
+      await update($, urls, list => merge(list, found))
+      titleLater($, found, prompt)
+    }
     return next(e)
   })
 
-  // The command is only visible in tool.call; subagent calls come through here too. Returns after writing, and the result row's session.append comes later, so the git section sees the new entries
+  // Producer tools: only here are both the input (what was sent or created) and the result visible. Returns after writing, so the git section's session.append on the result row sees the new entries
+  on('tool.call', { tool: PRODUCER_TOOL_RE }, async ($, e, next) => {
+    if (e.agentId || !isProducer(e.tool)) return next(e)
+    const ran = await next(e)
+    if (ran.deny !== undefined) return ran
+    // Tool result text is not prose: descriptions fall back to the site only
+    const found = extract(ran.text ?? '', false)
+    if (found.length > 0) {
+      const { tool: _tool, tool_use_id: _id, agentId: _agent, consent: _consent, ...input } = e as Record<string, unknown>
+      await update($, urls, list => merge(list, found))
+      titleLater($, found, producerContext(input, ran.text))
+    }
+    return ran
+  })
+
+  // The command is only visible in tool.call; subagent calls come through here too
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
     if (ran.deny === undefined) {
@@ -256,8 +376,34 @@ export function register(on: On) {
     return ran
   })
 
+  // Moves the link to the top with the asked-for title, and brings it back if \u00d7 hid it: it was asked for by name
+  // A RegExp, not the name: the tool only appears in the laid MCP types once it is registered
+  on('tool.call', { tool: new RegExp(`^${ADD_TOOL}$`) }, async ($, e) => {
+    const { url, title } = e as Record<string, unknown>
+    const entry = addedEntry(url, title)
+    if (typeof entry === 'string') return { deny: entry }
+    await update($, urls, list => merge(list, [entry]))
+    await update($, dismissed, list => list.filter(key => key !== entry.key))
+    // No URL in the result: the text is not scanned again
+    return { result: `Added to the panel's Links: ${entry.desc}` }
+  })
+
   // Startup and hot reload both rebuild from the transcript: old entries then follow changed description rules, and a scan of the conversation is cheap. On a timer so startup is not held up
   on('session.start', { surface: 'terminal', isInteractive: true }, async ($, e, next) => {
+    // Without the tool the panel still works: a refusal must not skip the rebuild below
+    await $.tool.register({
+      name: 'add_link',
+      description: ADD_DESCRIPTION,
+      isDeferred: false,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'The http(s) link' },
+          title: { type: 'string', description: 'Short summary title, e.g. \u56de\u590d\u9f99\u9f99\uff1a\u5d29\u6e83\u7edf\u8ba1\u5df2\u4e0a\u7ebf' },
+        },
+        required: ['url', 'title'],
+      },
+    }).catch(() => undefined)
     $.clock.after(1, async () => {
       const messages = await $.session.messages()
       const children = new Map<string, SessionMessage[]>()
@@ -266,8 +412,14 @@ export function register(on: On) {
         const child = await $.session.messages({ agentId: use.agentId })
         if (Array.isArray(child)) children.set(use.agentId, child)
       }
-      const rebuilt = urlsFromMessages(messages, children)
-      if (rebuilt.length > 0) await update($, urls, () => rebuilt)
+      const contexts = new Map<string, string>()
+      const rebuilt = urlsFromMessages(messages, children, contexts)
+      if (rebuilt.length === 0) return
+      await update($, urls, () => rebuilt)
+      // Titles in $.state survive a reload, so this only calls the model after a restart, or for links whose titling failed.
+      // ponytail: the newest 30 only (what Links draws); older ones keep their description
+      const due = rebuilt.filter(needsTitle).slice(0, 30)
+      await titleLinks($, due.map(entry => ({ entry, context: contexts.get(entry.key) ?? '' })))
     })
     return next(e)
   })

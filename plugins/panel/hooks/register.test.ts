@@ -34,24 +34,24 @@ const PANE = {
   },
 } as const
 
+/** Producer tools beneath the plugin answer with the input's body; registered before the test's first $ call. */
+const echoProducers = (on: On) =>
+  on('tool.call', { tool: /^(?:Artifact|mcp__.*)$/ }, (_$, e) => ({ result: {}, text: String((e as Record<string, unknown>).body ?? '') }) as never)
+
+/** A producer tool's call: the plugin reads its links in tool.call, where the input is visible. */
+const produce = ($: Parameters<TestBody>[0], text: string, tool = 'Artifact', input: Record<string, unknown> = {}) =>
+  $.tool.call({ tool, body: text, ...input } as never)
+
 test('toggles a section in and out of the collapsed set', async () => {
   expect(toggled([], 'git')).toEqual(['git'])
   expect(toggled(['git', 'links'], 'git')).toEqual(['links'])
 })
 
 test('draws links found in the conversation and folds a section on press', async ($, on) => {
+  echoProducers(on)
   const writes = memoryStore(on)
   mock.clock(on)
-  await $.session.append({
-    uuid: 'u1',
-    door: 'tool-result',
-    origin: { kind: 'tool', tool: 'Artifact' },
-    message: {
-      type: 'user',
-      role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Plan: [Sidebar plan](https://claude.ai/code/artifact/x) https://github.com/acme/app/pull/7' }],
-    },
-  })
+  await produce($, 'Plan: [Sidebar plan](https://claude.ai/code/artifact/x) https://github.com/acme/app/pull/7')
   const ui = await $.ui.mount(PANE)
   expect((await ui.find({ type: 'Link', text: 'Sidebar plan' }))?.props.href).toBe('https://claude.ai/code/artifact/x')
   expect(await ui.find({ type: 'Link', text: '#7' })).toBeDefined()
@@ -90,6 +90,7 @@ const toolResult = (text: string): SessionAppendInput => ({
 })
 
 test('collects only what the session produced or operated on', async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   memoryStore(on)
   const outputs: Record<string, string> = {
@@ -108,7 +109,7 @@ test('collects only what the session produced or operated on', async ($, on) => 
   await $.session.append(user('prompt', 'Look at [Spec](https://docs.dev/spec)'))
   await $.session.append(user('response', 'The reply mentions https://docs.dev/reply'))
   await $.session.append({ ...toolResult('https://docs.dev/read'), origin: { kind: 'tool', tool: 'Read' } })
-  await $.session.append(toolResult('Published plan.html (private) at https://claude.ai/code/artifact/p1'))
+  await produce($, 'Published plan.html (private) at https://claude.ai/code/artifact/p1')
   for (const command of Object.keys(outputs)) await $.tool.call({ tool: 'Bash', tool_use_id: command, command } as never)
   // Plain Bash result rows are not collected either
   await $.session.append({ ...toolResult('https://docs.dev/bash-row'), origin: { kind: 'tool', tool: 'Bash' } })
@@ -118,11 +119,12 @@ test('collects only what the session produced or operated on', async ($, on) => 
 })
 
 test('shows six links and folds the rest into +N more', async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   memoryStore(on)
   // One site per link, none reaches three, so no tabs
   const text = Array.from({ length: 8 }, (_, i) => `[Doc ${i}](https://d${i}.dev/x)`).join('\n')
-  await $.session.append(toolResult(text))
+  await produce($, text)
   const ui = await $.ui.mount(PANE)
   expect(await ui.findAll({ type: 'Link' })).toHaveLength(6)
   expect((await ui.find({ key: 'more:links' }))?.text).toBe('+2 more')
@@ -133,9 +135,10 @@ test('shows six links and folds the rest into +N more', async ($, on) => {
 })
 
 test('leaves out a section switched off in settings', { options: { showGit: false, showSession: false } }, async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   memoryStore(on)
-  await $.session.append(toolResult('https://github.com/acme/app/pull/7 and [Doc](https://docs.dev/a)'))
+  await produce($, 'https://github.com/acme/app/pull/7 and [Doc](https://docs.dev/a)')
   const ui = await $.ui.mount(PANE)
   expect(await ui.find({ key: 'toggle:git' })).toBeUndefined()
   expect(await ui.find({ type: 'Link', text: '#7' })).toBeUndefined()
@@ -183,9 +186,10 @@ test('reads the open, row, tab and refresh options, falling back on bad values',
 })
 
 test('hides a dismissed row from both Git and Links for this session', async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   memoryStore(on)
-  await $.session.append(toolResult('https://github.com/acme/app/pull/7 and [Doc](https://docs.dev/a)'))
+  await produce($, 'https://github.com/acme/app/pull/7 and [Doc](https://docs.dev/a)')
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'dismiss:https://docs.dev/a' })
   expect(await ui.find({ type: 'Link', text: 'Doc' })).toBeUndefined()
@@ -197,9 +201,10 @@ test('hides a dismissed row from both Git and Links for this session', async ($,
 })
 
 test('draws a link as description plus full URL, with a copy button', async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   memoryStore(on)
-  await $.session.append(toolResult('[A very long description that runs well past forty columns](https://docs.dev/a)'))
+  await produce($, '[A very long description that runs well past forty columns](https://docs.dev/a)')
   const ui = await $.ui.mount(PANE)
   const label = String(linkLabel(await ui.find({ type: 'Link' })))
   // 40 columns - icon 2 - " copy ×" 4, plus the trailing …
@@ -217,11 +222,10 @@ const tabsOf = async (ui: { findAll: (q: object) => Promise<{ text: string; prop
     .sort()
 
 test('splits GitHub into PR / Issue / Others tabs and remembers the pick', async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   const writes = memoryStore(on)
-  await $.session.append(
-    toolResult('https://github.com/acme/app/issues/3 https://github.com/acme/app/pull/7 https://github.com/acme/app/blob/main/a.ts [Doc](https://docs.dev/a)'),
-  )
+  await produce($, 'https://github.com/acme/app/issues/3 https://github.com/acme/app/pull/7 https://github.com/acme/app/blob/main/a.ts [Doc](https://docs.dev/a)')
   const ui = await $.ui.mount(PANE)
   expect(await tabsOf(ui)).toEqual(['Issue 1 dim', 'Others 1 dim', 'PR 1*'])
   // The section count is the sum of all three; Links no longer has github.com
@@ -237,20 +241,22 @@ test('splits GitHub into PR / Issue / Others tabs and remembers the pick', async
 })
 
 test('restores the GitHub tab a previous session picked', async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   memoryStore(on, { gitTab: 'issue', isOpen: false })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-  await $.session.append(toolResult('https://github.com/acme/app/issues/3 https://github.com/acme/app/pull/7'))
+  await produce($, 'https://github.com/acme/app/issues/3 https://github.com/acme/app/pull/7')
   const ui = await $.ui.mount(PANE)
   expect((await ui.findAll({ type: 'Link' })).map(linkLabel)).toEqual(['#3'])
 })
 
 test('lands on the first tab with rows while PR is empty, and still shows the empty tab', async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   memoryStore(on)
-  await $.session.append(toolResult('https://github.com/acme/app https://github.com/acme/app/issues/3'))
+  await produce($, 'https://github.com/acme/app https://github.com/acme/app/issues/3')
   const ui = await $.ui.mount(PANE)
   expect(await tabsOf(ui)).toEqual(['Issue 1*', 'Others 1 dim', 'PR 0 dim'])
   expect((await ui.findAll({ type: 'Link' })).map(linkLabel)).toEqual(['#3'])
@@ -260,11 +266,12 @@ test('lands on the first tab with rows while PR is empty, and still shows the em
 })
 
 test('folds each GitHub tab into its own +N more', async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   memoryStore(on)
   const prs = Array.from({ length: 7 }, (_, i) => `https://github.com/acme/app/pull/${i + 1}`).join(' ')
   const repos = Array.from({ length: 8 }, (_, i) => `https://github.com/acme/r${i}`).join(' ')
-  await $.session.append(toolResult(`${prs} ${repos} https://github.com/acme/app/issues/9`))
+  await produce($, `${prs} ${repos} https://github.com/acme/app/issues/9`)
   const ui = await $.ui.mount(PANE)
   expect(await ui.findAll({ type: 'Link' })).toHaveLength(6)
   expect((await ui.find({ key: 'more:git:pr' }))?.text).toBe('+1 more')
@@ -281,9 +288,10 @@ test('folds each GitHub tab into its own +N more', async ($, on) => {
 })
 
 test('keeps the status column empty until gh answers, never "Unknown"', async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   memoryStore(on)
-  await $.session.append(toolResult('https://github.com/acme/app/pull/7 https://github.com/acme/lib/pull/2'))
+  await produce($, 'https://github.com/acme/app/pull/7 https://github.com/acme/lib/pull/2')
   const ui = await $.ui.mount(PANE)
   expect(await ui.find({ type: 'Text', text: /acme\/lib/ })).toBeDefined()
   expect(await ui.find({ type: 'Link', text: '#2' })).toBeDefined()
@@ -432,11 +440,12 @@ test('adds a row for an agent the engine lists but the panel never saw, and foll
 })
 
 test('turns the copy button into a check for two seconds after a copy', async ($, on) => {
+  echoProducers(on)
   const clock = mock.clock(on)
   memoryStore(on)
   on('ui.copy', () => ({ value: { isCopied: true } }) as never)
   on('ui.toast', () => ({ value: undefined }))
-  await $.session.append(toolResult('[Doc](https://docs.dev/a) [Other](https://docs.dev/b)'))
+  await produce($, '[Doc](https://docs.dev/a) [Other](https://docs.dev/b)')
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'copy:https://docs.dev/a' })
   expect((await ui.find({ key: 'copy:https://docs.dev/a' }))?.text).toBe(GLYPH.check)
@@ -449,9 +458,10 @@ test('turns the copy button into a check for two seconds after a copy', async ($
 })
 
 test('picks the PR glyph by state and colors it like the state word', async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   memoryStore(on)
-  await $.session.append(toolResult('https://github.com/acme/app/pull/7 https://github.com/acme/app/issues/3'))
+  await produce($, 'https://github.com/acme/app/pull/7 https://github.com/acme/app/issues/3')
   const ui = await $.ui.mount(PANE)
   // State not fetched yet: the open PR glyph, in gray
   const pr = await ui.find({ type: 'Text', text: `${GLYPH.pr} ` })
@@ -476,6 +486,7 @@ test('takes effort from the main thread turn step, not a subagent one', async ($
 })
 
 test('fills PR status from gh, keeps the last title when gh fails, then stops asking', async ($, on) => {
+  echoProducers(on)
   const clock = mock.clock(on)
   memoryStore(on, { isOpen: false })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
@@ -487,7 +498,7 @@ test('fills PR status from gh, keeps the last title when gh fails, then stops as
     return { value: gh.reply } as never
   })
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-  await $.session.append(toolResult('https://github.com/acme/app/pull/7'))
+  await produce($, 'https://github.com/acme/app/pull/7')
   await clock.advance(1)
   const ui = await $.ui.mount(PANE)
   expect(linkLabel(await ui.find({ type: 'Link' }))).toBe('#7 Fix login')
@@ -603,9 +614,10 @@ const artifacts = (n: number) => Array.from({ length: n }, (_, i) => `[A${i}](ht
 const SLACK = '[Thread](https://acme.slack.com/archives/C1/p2)'
 
 test('splits Links into a tab per site with three or more links, the rest under Others', async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   const writes = memoryStore(on)
-  await $.session.append(toolResult(`${artifacts(3)}\n${SLACK}`))
+  await produce($, `${artifacts(3)}\n${SLACK}`)
   const ui = await $.ui.mount(PANE)
   expect(await linkTabsOf(ui)).toEqual(['Artifact 3*', 'Others 1 dim'])
   // Later in the same text comes first (merge puts the newest first)
@@ -621,18 +633,20 @@ test('splits Links into a tab per site with three or more links, the rest under 
 })
 
 test('keeps Links flat while no site reaches three', async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   memoryStore(on)
-  await $.session.append(toolResult(`${artifacts(2)}\n${SLACK}`))
+  await produce($, `${artifacts(2)}\n${SLACK}`)
   const ui = await $.ui.mount(PANE)
   expect(await linkTabsOf(ui)).toEqual([])
   expect((await ui.findAll({ type: 'Link' })).map(linkLabel)).toEqual(['Thread', 'A1', 'A0'])
 })
 
 test('drops the Links tabs once a dismissed row leaves no site at three', async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   memoryStore(on)
-  await $.session.append(toolResult(`${artifacts(3)}\n${SLACK}`))
+  await produce($, `${artifacts(3)}\n${SLACK}`)
   const ui = await $.ui.mount(PANE)
   expect(await linkTabsOf(ui)).toEqual(['Artifact 3*', 'Others 1 dim'])
   await ui.press({ key: 'dismiss:https://claude.ai/code/artifact/a0' })
@@ -641,10 +655,11 @@ test('drops the Links tabs once a dismissed row leaves no site at three', async 
 })
 
 test('orders Links tabs by size with Others last, each with its own +N more', async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   memoryStore(on)
   const slack = Array.from({ length: 3 }, (_, i) => `[T${i}](https://acme.slack.com/archives/C1/p${i})`).join('\n')
-  await $.session.append(toolResult(`${slack}\n${artifacts(8)}`))
+  await produce($, `${slack}\n${artifacts(8)}`)
   const ui = await $.ui.mount(PANE)
   expect(await linkTabsOf(ui)).toEqual(['Artifact 8*', 'Slack 3 dim', 'Others 0 dim'])
   expect(await ui.findAll({ type: 'Link' })).toHaveLength(6)
@@ -678,11 +693,12 @@ test('leaves the pane closed on session start when autoOpen is off', { options: 
 })
 
 test('shows visibleRows rows per section and tab before +N more', { options: { visibleRows: 3 } }, async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   memoryStore(on)
   const prs = Array.from({ length: 4 }, (_, i) => `https://github.com/acme/app/pull/${i + 1}`).join(' ')
   const docs = Array.from({ length: 8 }, (_, i) => `[Doc ${i}](https://d${i}.dev/x)`).join('\n')
-  await $.session.append(toolResult(`${prs}\n${docs}`))
+  await produce($, `${prs}\n${docs}`)
   const ui = await $.ui.mount(PANE)
   expect(await ui.findAll({ type: 'Link' })).toHaveLength(6)
   expect((await ui.find({ key: 'more:git:pr' }))?.text).toBe('+1 more')
@@ -690,9 +706,10 @@ test('shows visibleRows rows per section and tab before +N more', { options: { v
 })
 
 test('gives a site its own Links tab at tabThreshold links', { options: { tabThreshold: 2 } }, async ($, on) => {
+  echoProducers(on)
   mock.clock(on)
   memoryStore(on)
-  await $.session.append(toolResult(`${artifacts(2)}\n${SLACK}`))
+  await produce($, `${artifacts(2)}\n${SLACK}`)
   const ui = await $.ui.mount(PANE)
   expect(await linkTabsOf(ui)).toEqual(['Artifact 2*', 'Others 1 dim'])
 })
@@ -709,10 +726,11 @@ function ghCounter(on: On) {
 }
 
 test('re-polls open PRs every ghRefreshSeconds', { options: { ghRefreshSeconds: 5 } }, async ($, on) => {
+  echoProducers(on)
   const clock = mock.clock(on)
   const gh = ghCounter(on)
   await startSession($, on, { isOpen: false })
-  await $.session.append(toolResult('https://github.com/acme/app/pull/7'))
+  await produce($, 'https://github.com/acme/app/pull/7')
   await clock.advance(1)
   const asked = gh.calls
   expect(asked).toBeGreaterThan(0)
@@ -721,10 +739,11 @@ test('re-polls open PRs every ghRefreshSeconds', { options: { ghRefreshSeconds: 
 })
 
 test('asks gh once per PR and never re-polls when ghRefreshSeconds is 0', { options: { ghRefreshSeconds: 0 } }, async ($, on) => {
+  echoProducers(on)
   const clock = mock.clock(on)
   const gh = ghCounter(on)
   await startSession($, on, { isOpen: false })
-  await $.session.append(toolResult('https://github.com/acme/app/pull/7'))
+  await produce($, 'https://github.com/acme/app/pull/7')
   await clock.advance(1)
   const asked = gh.calls
   expect(asked).toBeGreaterThan(0)
@@ -733,13 +752,14 @@ test('asks gh once per PR and never re-polls when ghRefreshSeconds is 0', { opti
 })
 
 test('/panel demo draws the seeded data, opens a closed pane, and turns off again', async ($, on) => {
+  echoProducers(on)
   mock.clock(on, { now: 1_000_000 })
   const writes = memoryStore(on)
   const pane = { isPlaced: false }
   const opened: string[] = []
   on('ui.panes', () => ({ value: [{ id: 'panel', title: 'panel', isPlaced: pane.isPlaced }] }) as never)
   on('ui.open', (_$, e) => (opened.push(e.id), (pane.isPlaced = true), { value: { isPlaced: true } }) as never)
-  await $.session.append(toolResult('[Doc](https://docs.dev/a)'))
+  await produce($, '[Doc](https://docs.dev/a)')
 
   expect(await $.command.run({ command: 'panel', args: 'demo' } as never)).toMatchObject({ text: 'Panel demo on' })
   expect(opened).toEqual(['panel'])
@@ -766,12 +786,118 @@ test('/panel demo draws the seeded data, opens a closed pane, and turns off agai
 })
 
 test('asks gh nothing while the demo is on', async ($, on) => {
+  echoProducers(on)
   const clock = mock.clock(on)
   const gh = ghCounter(on)
   on('ui.panes', () => ({ value: [{ id: 'panel', title: 'panel', isPlaced: true }] }) as never)
   await startSession($, on, { isOpen: false })
   await $.command.run({ command: 'panel', args: 'demo' } as never)
-  await $.session.append(toolResult('https://github.com/acme/app/pull/7'))
+  await produce($, 'https://github.com/acme/app/pull/7')
   await clock.advance(5 * 60_000)
   expect(gh.calls).toBe(0)
+})
+
+/** Answers $.model.complete beneath the plugin and records each prompt it was asked. */
+function haiku(on: On, answer: (prompt: string) => string | undefined) {
+  const asked: string[] = []
+  const usage = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+  on('model.complete', (_$, e) => {
+    asked.push(e.prompt)
+    const text = answer(e.prompt)
+    return { value: text === undefined ? { isAnswered: false, reason: 'api-error', status: 529, error: 'overloaded', usage } : { isAnswered: true, text, usage } } as never
+  })
+  return asked
+}
+
+const prompt = (text: string): SessionAppendInput => ({
+  uuid: `p-${text.length}`,
+  door: 'prompt',
+  origin: { kind: 'composer' },
+  message: { type: 'user', role: 'user', content: [{ type: 'text', text }] },
+})
+
+const THREAD = 'https://acme.slack.com/archives/C1/p2'
+
+test('shows the old description at once, then the model title, asked once per link', async ($, on) => {
+  const clock = mock.clock(on)
+  memoryStore(on)
+  const asked = haiku(on, () => '"\u9650\u6d41\u8ba8\u8bba"')
+  await $.session.append(prompt(`Rate limit thread, see: ${THREAD}`))
+  const ui = await $.ui.mount(PANE)
+  expect(linkLabel(await ui.find({ type: 'Link' }))).toBe('Rate limit thread')
+  await clock.advance(1)
+  expect(linkLabel(await ui.find({ type: 'Link' }))).toBe('\u9650\u6d41\u8ba8\u8bba')
+  expect(asked).toHaveLength(1)
+  expect(asked[0]).toContain('Rate limit thread')
+  // Pasted again: the cached title stands, no second call
+  await $.session.append(prompt(`again ${THREAD}`))
+  await clock.advance(1)
+  expect(asked).toHaveLength(1)
+})
+
+test('keeps the old description when the model fails or answers a URL', async ($, on) => {
+  const clock = mock.clock(on)
+  memoryStore(on)
+  haiku(on, text => (text.includes('docs.dev') ? 'https://docs.dev/a' : undefined))
+  await $.session.append(prompt(`Rate limit thread, see: ${THREAD}\nThe spec: https://docs.dev/a`))
+  await clock.advance(1)
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.findAll({ type: 'Link' })).map(linkLabel)).toEqual(['The spec', 'Rate limit thread'])
+})
+
+test('titles a producer link from the tool input, leaving labelled links alone', async ($, on) => {
+  const clock = mock.clock(on)
+  memoryStore(on)
+  echoProducers(on)
+  const asked = haiku(on, () => '\u56de\u590d\u9f99\u9f99\uff1a\u5d29\u6e83\u7edf\u8ba1\u5df2\u4e0a\u7ebf')
+  await produce($, `Sent ${THREAD}`, 'mcp__slack__send_message', { message: 'crash stats are live' })
+  await produce($, '[Plan](https://docs.dev/plan)')
+  await clock.advance(1)
+  expect(asked).toHaveLength(1)
+  expect(asked[0]).toContain('crash stats are live')
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.findAll({ type: 'Link' })).map(linkLabel)).toEqual(['Plan', '\u56de\u590d\u9f99\u9f99\uff1a\u5d29\u6e83\u7edf\u8ba1\u5df2\u4e0a\u7ebf'])
+})
+
+test('a rebuild from the transcript reuses cached titles without calling the model', async ($, on) => {
+  const clock = mock.clock(on)
+  const asked = haiku(on, () => 'Rate limit discussion')
+  const transcript = [{ role: 'user', text: `Rate limit thread, see: ${THREAD}`, toolUses: [] }]
+  on('session.messages', () => ({ value: transcript }) as never)
+  memoryStore(on, { isOpen: false })
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  await $.session.append(prompt(transcript[0]!.text))
+  await clock.advance(1)
+  expect(asked).toHaveLength(1)
+  // Hot reload: session.start rebuilds urls from the transcript
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await clock.advance(1)
+  expect(asked).toHaveLength(1)
+  const ui = await $.ui.mount(PANE)
+  expect(linkLabel(await ui.find({ type: 'Link' }))).toBe('Rate limit discussion')
+})
+
+test('add_link files a link at the top with its title, over a markdown label, and refuses non-http', async ($, on) => {
+  mock.clock(on)
+  memoryStore(on, { isOpen: false })
+  echoProducers(on)
+  const registered: { name: string; isDeferred?: unknown }[] = []
+  on('tool.register', (_$, e) => (registered.push(e), { value: { tool: `mcp__panel__${e.name}` } }) as never)
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  expect(registered).toMatchObject([{ name: 'add_link', isDeferred: false }])
+
+  await produce($, '[Report](https://docs.dev/report) [Other](https://docs.dev/other)')
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'dismiss:https://docs.dev/report' })
+  const added = await $.tool.call({ tool: 'mcp__panel__add_link', url: 'https://docs.dev/report', title: 'Weekly crash report' } as never)
+  expect(added.text ?? JSON.stringify(added.result)).not.toContain('https://')
+  // Asked for by name: back from \u00d7, at the top, with the given title
+  expect((await ui.findAll({ type: 'Link' })).map(linkLabel)).toEqual(['Weekly crash report', 'Other'])
+
+  const refused = await $.tool.call({ tool: 'mcp__panel__add_link', url: 'javascript:alert(1)', title: 'x' } as never)
+  expect(refused.deny ?? refused.text).toContain('Only http(s)')
+  expect(await ui.findAll({ type: 'Link' })).toHaveLength(2)
 })

@@ -12,7 +12,7 @@ export type UrlEntry = {
   url: string
   /** Main line text */
   desc: string
-  /** How trustworthy desc is: 1 markdown text, 2 known site, 3 preceding sentence, 4 fallback; a repeat keeps the better one */
+  /** How trustworthy desc is: 0 asked for via add_link, 1 markdown text, 2 known site, 3 preceding sentence, 4 fallback; a repeat keeps the better one. 3 and 4 give way to a model title (titles) */
   rank: number
   /** Set on every link under github.com/<owner>/<repo>; links without it go to Links */
   git?: { kind: 'pr' | 'issue'; repo: string; number: number } | { kind: 'repo'; repo: string; /** Path after the repo, empty for the repo home */ path: string }
@@ -87,6 +87,8 @@ declare module 'claude-code' {
   interface PluginState {
     panel: {
       urls: UrlEntry[]
+      /** Model titles by UrlEntry.key, for links whose own description is weak (rank 3 / 4); session state, so reloads and transcript rebuilds reuse them */
+      titles: Record<string, string>
       agents: AgentRow[]
       /** By UrlEntry.key */
       gitStatus: Record<string, GitInfo>
