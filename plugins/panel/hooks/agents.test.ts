@@ -1,9 +1,9 @@
 import { expect, test } from 'claude-code/testing'
 
-import type { SessionMessage } from 'claude-code'
+import type { AgentStatus, SessionMessage } from 'claude-code'
 
 import type { AgentRow } from '../types'
-import { agentsFromMessages, historyLine, isHistory, mainRight, mainSegments, rightLine, settledState, sortAgents, subSegments } from './sections/agents'
+import { agentsFromMessages, historyLine, isHistory, mainRight, mainSegments, reconciled, rightLine, settledState, sortAgents, stepCounted, stepStarted, subSegments } from './sections/agents'
 import type { Segment } from './sections/agents'
 import { duration, tokenCount } from './section'
 
@@ -158,4 +158,63 @@ test('writes the summary line, leaving out zero counts and adding up tokens', as
   )
   expect(historyLine([done('a'), done('b')])).toBe('✓ 2 done')
   expect(historyLine([{ ...row('c', 'failed', 1, 2), tokens: 300 }])).toBe('✗ 1 failed · ↓ 300')
+})
+
+test('starts a new run on a turnId the row has not seen, and keeps the run on its own steps', async () => {
+  const failed: AgentRow = { ...row('a', 'failed', 1_000, 5_000), turnId: 'run1', tokens: 9_000, outputTokens: 800 }
+  // Same run: running again, start and tokens kept
+  expect(stepStarted(failed, 'run1', 9_000)).toEqual({ ...failed, state: 'running', endedAt: undefined })
+  // Resumed: timed and counted afresh
+  expect(stepStarted(failed, 'run2', 9_000)).toEqual({ ...row('a', 'running', 9_000), turnId: 'run2', tokens: undefined, outputTokens: undefined })
+})
+
+test('counts tokens as the tasks bar: the last request input with cache, plus the run output', async () => {
+  const usage = (input: number, created: number, cached: number, output: number) => ({
+    model: 'm',
+    input_tokens: input,
+    cache_creation_input_tokens: created,
+    cache_read_input_tokens: cached,
+    output_tokens: output,
+  })
+  const first = stepCounted(row('a', 'running', 1), usage(100, 2_000, 30_000, 400))
+  expect([first.tokens, first.outputTokens]).toEqual([32_500, 400])
+  // The input is replaced, not added; output adds up
+  const second = stepCounted(first, usage(50, 500, 40_000, 600))
+  expect([second.tokens, second.outputTokens]).toEqual([41_550, 1_000])
+})
+
+test('reconciles live rows with the engine list', async () => {
+  const list = [
+    row('killed', 'running', 1),
+    row('failed', 'running', 1),
+    row('completed', 'running', 1),
+    row('gone', 'running', 1),
+    row('goneIdle', 'idle', 1, 2),
+    row('nowIdle', 'running', 1),
+    row('waiting', 'running', 1),
+    row('resumed', 'done', 1, 2),
+  ]
+  const listed = new Map<string, AgentStatus>([
+    ['killed', 'killed'],
+    ['failed', 'failed'],
+    ['completed', 'completed'],
+    ['nowIdle', 'idle'],
+    ['waiting', 'waiting'],
+    ['resumed', 'running'],
+  ])
+  const byId = Object.fromEntries((reconciled(list, listed, 50) ?? []).map(a => [a.id, [a.state, a.endedAt]]))
+  expect(byId).toEqual({
+    killed: ['aborted', 50],
+    failed: ['failed', 50],
+    completed: ['done', 50],
+    gone: ['aborted', 50],
+    goneIdle: ['done', 50],
+    nowIdle: ['idle', 50],
+    // Still running by the list: untouched
+    waiting: ['running', undefined],
+    // Ended rows are left to their next step, however the list reads
+    resumed: ['done', 2],
+  })
+  // Nothing to change: no write
+  expect(reconciled([row('r', 'running', 1)], new Map([['r', 'running']]), 50)).toBeUndefined()
 })

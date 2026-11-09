@@ -33,9 +33,13 @@ export type AgentRow = {
   /** Only forks and teammates are marked; plain subagents are not */
   kind?: 'fork' | 'teammate'
   state: AgentState
-  /** Summed output_tokens: added on every turn.complete carrying its agentId, so a teammate's turns add up; rebuilt rows have none */
+  /** As Claude's tasks bar counts them: the run's last request's whole input (cache included) plus its summed output; rebuilt rows have none */
   tokens?: number
-  /** 0 = unknown (a row rebuilt from the transcript): no duration is drawn */
+  /** This run's summed output_tokens, the second half of tokens */
+  outputTokens?: number
+  /** The turn the current run steps under; a new one is a new run (spawn, or a resume by SendMessage) */
+  turnId?: string
+  /** Start of the current run, as the tasks bar times it; 0 = unknown (a row rebuilt from the transcript): no duration is drawn */
   startedAt: number
   endedAt?: number
 }

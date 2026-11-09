@@ -42,6 +42,29 @@ const echoProducers = (on: On) =>
 const produce = ($: Parameters<TestBody>[0], text: string, tool = 'Artifact', input: Record<string, unknown> = {}) =>
   $.tool.call({ tool, body: text, ...input } as never)
 
+/** API usage of one response */
+const usageOf = (input: number, cacheRead: number, output: number) => ({
+  model: 'claude-haiku-5-5',
+  input_tokens: input,
+  output_tokens: output,
+  cache_read_input_tokens: cacheRead,
+  cache_creation_input_tokens: 0,
+})
+
+/** turn.step beneath the plugin: each request answers with the next queued usage, none once the queue is empty */
+function stepReplies(on: On) {
+  const usages: ReturnType<typeof usageOf>[] = []
+  on('turn.step', async function* (_$, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: usages.shift() ?? null } as never
+  })
+  return usages
+}
+
+/** One request of an agent's loop; a new turnId is a new run */
+async function step($: Parameters<TestBody>[0], agentId: string, turnId = 't') {
+  for await (const _ of $.turn.step({ turnId, index: 0, model: 'claude-haiku-5-5', messageCount: 1, agentId } as never));
+}
+
 test('toggles a section in and out of the collapsed set', async () => {
   expect(toggled([], 'git')).toEqual(['git'])
   expect(toggled(['git', 'links'], 'git')).toEqual(['links'])
@@ -338,6 +361,7 @@ test('lists a subagent with model, effort from its call, and opens the tasks lis
   on('agent.spawn', () => ({ model: 'claude-haiku-5-5', agentId: 'a1' }))
   on('agent.list', () => ({ value: [] }) as never)
   on('turn.complete', () => ({ text: '' }))
+  const usages = stepReplies(on)
   // In the engine, spawn happens inside the Agent tool call's next
   on('tool.call', { tool: 'Agent' }, async (_$, e) => {
     await $.agent.spawn({
@@ -360,14 +384,16 @@ test('lists a subagent with model, effort from its call, and opens the tasks lis
   expect((await ui.find({ key: 'open:agent-a1' }))?.text).toBe('general-purpose')
   expect(await ui.find({ type: 'Text', text: /^ 1$/ })).toBeDefined()
 
-  // Each turn's output_tokens add up; a turn with no usage (interrupted) adds nothing
-  const usage = { model: 'claude-haiku-5-5', input_tokens: 1, output_tokens: 1000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
-  const turn = { turnId: 't', agentId: 'a1', answer: '', durationMs: 1, isAborted: false, reason: 'answer' }
-  await $.turn.complete({ ...turn, usage } as never)
-  await $.turn.complete({ ...turn, usage: { ...usage, output_tokens: 500 } } as never)
-  await $.turn.complete({ ...turn, isAborted: true, reason: 'aborted' } as never)
-  // The last turn was interrupted, so Aborted; tokens are still the first two turns' sum
-  expect(await ui.find({ type: 'Text', text: /^↓ 1\.5k · Aborted$/ })).toBeDefined()
+  // As the tasks bar counts: the last request's whole input plus the run's summed output; a request with no usage changes nothing
+  usages.push(usageOf(1_000, 20_000, 500), usageOf(1_000, 30_000, 700))
+  await step($, 'a1')
+  expect(await ui.find({ type: 'Text', text: /^↓ 21\.5k · Running$/ })).toBeDefined()
+  await step($, 'a1')
+  await step($, 'a1')
+  expect(await ui.find({ type: 'Text', text: /^↓ 32\.2k · Running$/ })).toBeDefined()
+  // Interrupted: Aborted, and turn.complete adds no tokens of its own
+  await $.turn.complete({ turnId: 't', agentId: 'a1', answer: '', durationMs: 1, isAborted: true, reason: 'aborted', usage: usageOf(1, 0, 9_000) } as never)
+  expect(await ui.find({ type: 'Text', text: /^↓ 32\.2k · Aborted$/ })).toBeDefined()
 
   await ui.press({ key: 'open:agent-a1' })
   expect(ran).toEqual(['tasks'])
@@ -399,6 +425,7 @@ function teammateOnEngineList(on: On) {
   on('agent.list', () => ({ value: [{ id: 'tm1', teammateId: 'scout@team', name: 'scout', description: 'Watch CI', type: 'teammate', status: status.now }] }) as never)
   on('tool.call', () => ({ result: 'ok' }) as never)
   on('turn.complete', () => ({ text: '' }))
+  stepReplies(on)
   return status
 }
 
@@ -409,7 +436,7 @@ test('keeps running durations moving once a second', async ($, on) => {
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
-  await $.tool.call({ tool: 'Bash', agentId: 'tm1', command: 'ls' } as never)
+  await step($, 'tm1')
   const ui = await $.ui.mount(PANE)
   expect(await ui.find({ type: 'Text', text: /^0s · Running$/ })).toBeDefined()
   // No other write in between: only tick redraws
@@ -422,8 +449,8 @@ test('adds a row for an agent the engine lists but the panel never saw, and foll
   memoryStore(on)
   const status = teammateOnEngineList(on)
   const ui = await $.ui.mount(PANE)
-  // Woken by SendMessage: the first tool call adds the row
-  await $.tool.call({ tool: 'Bash', agentId: 'tm1', command: 'ls' } as never)
+  // Woken by SendMessage: its first step adds the row
+  await step($, 'tm1', 't1')
   expect((await ui.find({ key: 'open:agent-tm1' }))?.text).toBe('scout')
   expect(await ui.find({ type: 'Text', text: 'Watch CI' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Running$/ })).toBeDefined()
@@ -434,7 +461,7 @@ test('adds a row for an agent the engine lists but the panel never saw, and foll
 
   // Woken again: back to running, no duplicate row
   status.now = 'running'
-  await $.tool.call({ tool: 'Bash', agentId: 'tm1', command: 'ls' } as never)
+  await step($, 'tm1', 't2')
   expect(await ui.find({ type: 'Text', text: /Running$/ })).toBeDefined()
   expect(await ui.findAll({ key: 'open:agent-tm1' })).toHaveLength(1)
 })
@@ -536,27 +563,70 @@ function subagentsOnEngineList(on: On, status: Record<string, string>) {
   on('agent.list', () => ({ value: Object.entries(status).map(([id, s]) => ({ id, name: id, description: '', type: 'general-purpose', status: s })) }) as never)
   on('tool.call', () => ({ result: 'ok' }) as never)
   on('turn.complete', () => ({ text: '' }))
+  return stepReplies(on)
 }
 
-const finish = (agentId: string, reason = 'answer', outputTokens = 0) =>
-  ({
-    turnId: 't',
-    agentId,
-    answer: '',
-    durationMs: 1,
-    isAborted: false,
-    reason,
-    usage: { model: 'claude-haiku-5-5', input_tokens: 1, output_tokens: outputTokens, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-  }) as never
+const finish = (agentId: string, reason = 'answer') =>
+  ({ turnId: 't', agentId, answer: '', durationMs: 1, isAborted: reason === 'aborted', reason }) as never
+
+test('settles a stopped agent from the engine list even with no turn.complete, or one a late tool call follows', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const status: Record<string, string> = { stopped: 'running', killed: 'running', late: 'running', gone: 'running', busy: 'running' }
+  subagentsOnEngineList(on, status)
+  await startSession($, on, { isOpen: false })
+  for (const id of Object.keys(status)) await step($, id)
+  const ui = await $.ui.mount(PANE)
+
+  // Stopped by the person / killed by TaskStop: no event at all, only the list says killed
+  status.stopped = status.killed = 'killed'
+  // A turn.complete with the list still lagging, then a tool call of that run landing after it: the tool call no longer revives the row
+  await $.turn.complete(finish('late', 'aborted'))
+  await $.tool.call({ tool: 'Bash', agentId: 'late', command: 'ls' } as never)
+  status.late = 'killed'
+  // Ended and already dropped from the list, its end never seen
+  delete status.gone
+  expect(await ui.findAll({ type: 'Text', text: /Running$/ })).toHaveLength(4)
+
+  await clock.advance(2_000)
+  expect(await ui.findAll({ type: 'Text', text: /Running$/ })).toHaveLength(1)
+  expect(await ui.findAll({ type: 'Text', text: /Aborted$/ })).toHaveLength(4)
+})
+
+test('restarts duration and tokens when SendMessage resumes an agent that failed on an API error, as the tasks bar does', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const status: Record<string, string> = { a1: 'running' }
+  const usages = subagentsOnEngineList(on, status)
+  await startSession($, on, { isOpen: false })
+  usages.push(usageOf(1_000, 100_000, 2_000))
+  await step($, 'a1', 'run1')
+  await clock.advance(60 * 60_000)
+  status.a1 = 'failed'
+  await $.turn.complete(finish('a1', 'error'))
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: '1h · ↓ 103.0k · Failed' })).toBeDefined()
+
+  // Resumed ten minutes later: a new run, timed and counted from its own first request
+  await clock.advance(10 * 60_000)
+  status.a1 = 'running'
+  usages.push(usageOf(500, 140_000, 300), usageOf(500, 150_000, 200))
+  await step($, 'a1', 'run2')
+  await clock.advance(5 * 60_000)
+  await step($, 'a1', 'run2')
+  expect(await ui.find({ type: 'Text', text: '5m · ↓ 151.0k · Running' })).toBeDefined()
+  // The list agrees it runs: reconcile leaves it be
+  await clock.advance(2_000)
+  expect(await ui.find({ type: 'Text', text: /^5m 2s · ↓ 151\.0k · Running$/ })).toBeDefined()
+})
 
 test('folds finished agents into a summary line after agentsKeep and expands it on press', async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
   memoryStore(on)
   const status: Record<string, string> = { a1: 'running', a2: 'running', a3: 'running' }
-  subagentsOnEngineList(on, status)
-  for (const id of ['a1', 'a2', 'a3']) await $.tool.call({ tool: 'Bash', agentId: id, command: 'ls' } as never)
+  const usages = subagentsOnEngineList(on, status)
+  usages.push(usageOf(0, 0, 1000))
+  for (const id of ['a1', 'a2', 'a3']) await step($, id)
   status.a1 = 'completed'
-  await $.turn.complete(finish('a1', 'answer', 1000))
+  await $.turn.complete(finish('a1', 'answer'))
   status.a2 = 'failed'
   await $.turn.complete(finish('a2', 'error'))
   // Kept 10 minutes by default: Done folds into the summary, Failed keeps its row, running ones stay
@@ -581,7 +651,7 @@ test('hides a dismissed agent from rows and summary, and brings it back when it 
   memoryStore(on)
   const status: Record<string, string> = { a1: 'running', a2: 'running' }
   subagentsOnEngineList(on, status)
-  for (const id of ['a1', 'a2']) await $.tool.call({ tool: 'Bash', agentId: id, command: 'ls' } as never)
+  for (const id of ['a1', 'a2']) await step($, id)
   status.a1 = status.a2 = 'completed'
   await $.turn.complete(finish('a1'))
   await $.turn.complete(finish('a2'))
@@ -595,9 +665,9 @@ test('hides a dismissed agent from rows and summary, and brings it back when it 
   expect(await ui.find({ key: 'open:agent-a1' })).toBeUndefined()
   expect((await ui.find({ key: 'more:agents:history' }))?.text).toBe('✓ 1 done')
 
-  // Woken by SendMessage: a new tool call puts it back to Running on its own row
+  // Resumed by SendMessage: its new run's first step puts it back to Running on its own row
   status.a1 = 'running'
-  await $.tool.call({ tool: 'Bash', agentId: 'a1', command: 'ls' } as never)
+  await step($, 'a1', 't2')
   expect(await ui.find({ key: 'open:agent-a1' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Running$/ })).toBeDefined()
   expect((await ui.find({ key: 'more:agents:history' }))?.text).toBe('✓ 1 done')

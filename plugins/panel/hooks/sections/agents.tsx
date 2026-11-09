@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { AgentInfo, AgentStatus, EngineInterface, On, SessionMessage, TurnCompleteReason } from 'claude-code'
+import type { AgentInfo, AgentStatus, EngineInterface, On, SessionMessage, TurnCompleteReason, TurnUsage } from 'claude-code'
 
 import type { AgentRow, AgentState, FoldId, SessionInfo } from '../../types'
 import { duration, item, shortModel, tokenCount } from '../section'
@@ -102,6 +102,54 @@ export function historyLine(rows: AgentRow[]) {
 const patch = (list: AgentRow[], id: string, change: (row: AgentRow) => AgentRow) =>
   sortAgents(list.map(row => (row.id === id ? change(row) : row)))
 
+/**
+ * A step of the agent's loop is about to run, so it is running. A turnId the row has not seen starts a new run (the spawn, or a resume by SendMessage
+ * after Done / Failed / Aborted): duration and tokens start over, as Claude's tasks bar registers a resumed agent afresh.
+ */
+export function stepStarted(row: AgentRow, turnId: string, now: number): AgentRow {
+  const run = row.turnId === turnId ? {} : { turnId, startedAt: now, tokens: undefined, outputTokens: undefined }
+  return { ...row, ...run, state: 'running', endedAt: undefined }
+}
+
+/** The tasks bar's count after a response: that request's whole input (uncached + cache written + cache read) plus the run's output so far. */
+export function stepCounted(row: AgentRow, usage: TurnUsage): AgentRow {
+  const outputTokens = (row.outputTokens ?? 0) + usage.output_tokens
+  const input = usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens
+  return { ...row, outputTokens, tokens: input + outputTokens }
+}
+
+const isLive = (a: AgentRow) => a.state === 'running' || a.state === 'idle'
+
+/**
+ * Live rows (running / idle) checked against $.agent.list(), the source of truth; undefined when nothing changes.
+ * There is no event for a stop (TaskStop, the person stopping it), and a turn.complete can be overtaken by events of the run it ends, so the list settles it:
+ * a status that has ended (or a teammate gone idle) is taken as is. One the list no longer has was dropped after it ended, how is not known:
+ * a running row becomes Aborted (an end that sent no turn.complete was a stop), an idle teammate Done. A row the list says runs again is left to its next step.
+ */
+export function reconciled(list: AgentRow[], listed: ReadonlyMap<string, AgentStatus>, now: number) {
+  let changed = false
+  const next = list.map(row => {
+    if (!isLive(row)) return row
+    const status = listed.get(row.id)
+    const state: AgentState | undefined = status === undefined ? (row.state === 'running' ? 'aborted' : 'done') : LISTED[status]
+    if (!state || state === 'running' || state === row.state) return row
+    changed = true
+    return { ...row, state, endedAt: now }
+  })
+  return changed ? sortAgents(next) : undefined
+}
+
+const RECONCILE_MS = 2000
+
+/** Asks the engine only while a row is live, so an idle panel makes no calls. */
+async function reconcile($: EngineInterface) {
+  if (!(await read($, agents)).some(isLive)) return
+  const listed = new Map((await $.agent.list()).map(a => [a.id, a.status]))
+  const now = await $.clock.now()
+  if (!reconciled(await read($, agents), listed, now)) return
+  await update($, agents, list => reconciled(list, listed, now) ?? list)
+}
+
 /** An agent this plugin's agent.spawn never saw (running before a module reload, a teammate woken by SendMessage) gets a row from the engine list; its start time can only be now. */
 function rowFromInfo(info: AgentInfo, now: number): AgentRow {
   return {
@@ -114,7 +162,7 @@ function rowFromInfo(info: AgentInfo, now: number): AgentRow {
   }
 }
 
-// ponytail: ids the engine does not list (workflow agents, the engine's own forks such as compaction) are remembered so their every tool call does not query $.agent.list(); cleared on reload, at most one extra query each
+// ponytail: ids the engine does not list (workflow agents, the engine's own forks such as compaction) are remembered so their every step does not query $.agent.list(); cleared on reload, at most one extra query each
 const unlisted = new Set<string>()
 
 /** If the list lacks this id, fill it in from the engine list; if the engine does not list it either, let it be. */
@@ -135,7 +183,7 @@ const effortByCall = new Map<string, string | undefined>()
 /** An agent that acts again comes out of dismissed: × only hides it on the pane, and a teammate woken by SendMessage shows as usual. */
 async function restore($: EngineInterface, id: string) {
   const key = dismissKey(id)
-  // Read before writing: every tool call lands here, and writing when nothing is hidden would redraw for nothing
+  // Read before writing: every step lands here, and writing when nothing is hidden would redraw for nothing
   if ((await read($, dismissed)).includes(key)) await update($, dismissed, list => list.filter(k => k !== key))
 }
 
@@ -172,19 +220,19 @@ export function register(on: On) {
     return started
   })
 
-  // Writing the atom redraws, so durations refresh on their own; a woken teammate also goes back to running here
-  on('tool.call', async ($, e, next) => {
+  // Every run, the first included, goes through turn.step before any request, so a step (not a tool call, which an aborted run can still let land after its turn.complete) marks it running; session.tsx holds turn.step's matcherless hook
+  on('turn.step', { agentId: /./ }, async function* ($, e, next) {
     const id = e.agentId
-    if (id) {
-      await ensureRow($, id)
-      await restore($, id)
-      await update($, agents, list =>
-        list.some(a => a.id === id)
-          ? patch(list, id, row => ({ ...row, state: 'running', endedAt: undefined }))
-          : list,
-      )
-    }
-    return next(e)
+    if (!id) return yield* next(e)
+    await ensureRow($, id)
+    await restore($, id)
+    const now = await $.clock.now()
+    await update($, agents, list => (list.some(a => a.id === id) ? patch(list, id, row => stepStarted(row, e.turnId, now)) : list))
+    const result = yield* next(e)
+    const usage = result.usage
+    // Tokens only: the state is the turn's and the list's to settle
+    if (usage) await update($, agents, list => (list.some(a => a.id === id) ? patch(list, id, row => stepCounted(row, usage)) : list))
+    return result
   })
 
   // An event can carry only one matcherless hook per module and session.tsx has it (main-thread busy state); this one takes only subagent turns
@@ -200,8 +248,6 @@ export function register(on: On) {
           ...row,
           state: settledState(listed, e.reason, row.kind),
           endedAt: now,
-          // Interrupted turns and API errors carry no usage: add nothing
-          tokens: e.usage ? (row.tokens ?? 0) + e.usage.output_tokens : row.tokens,
         })),
       )
     }
@@ -210,6 +256,7 @@ export function register(on: On) {
 
   // After a restart or --resume $.state is empty, so rebuild from the transcript; on hot reload the atom survives and nothing is rebuilt. On a timer so startup is not held up
   on('session.start', { surface: 'terminal', isInteractive: true }, async ($, e, next) => {
+    $.clock.every(RECONCILE_MS, () => void reconcile($))
     $.clock.after(1, async () => {
       if ((await read($, agents)).length > 0) return
       const [messages, listed] = await Promise.all([$.session.messages(), $.agent.list()])
