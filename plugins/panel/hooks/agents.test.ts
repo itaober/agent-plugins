@@ -44,7 +44,7 @@ test('formats durations short', async () => {
   expect(duration(80_000)).toBe('1m 20s')
   expect(duration(437_000)).toBe('7m 17s')
   expect(duration(120_000)).toBe('2m')
-  expect(duration(12 * 60_000 + 5_000)).toBe('12m')
+  expect(duration(30 * 60_000 + 12_000)).toBe('30m 12s')
   expect(duration(65 * 60_000)).toBe('1h 5m')
   expect(duration(120 * 60_000)).toBe('2h')
 })

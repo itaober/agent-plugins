@@ -120,12 +120,12 @@ export function shortModel(model: string) {
   return m[2] ? `${name} ${m[2]}${m[3] ? `.${m[3]}` : ''}` : name
 }
 
-/** 7m 17s / 40s / 12m / 1h 5m: from ten minutes on, no seconds. */
+/** 7m 17s / 40s / 30m 12s / 1h 5m: seconds until the hour mark. */
 export function duration(ms: number) {
   const s = Math.max(0, Math.round(ms / 1000))
   if (s < 60) return `${s}s`
   const m = Math.floor(s / 60)
-  if (m < 60) return s % 60 && m < 10 ? `${m}m ${s % 60}s` : `${m}m`
+  if (m < 60) return s % 60 ? `${m}m ${s % 60}s` : `${m}m`
   return `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}`
 }
 
