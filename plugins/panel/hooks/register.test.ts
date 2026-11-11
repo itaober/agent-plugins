@@ -976,8 +976,8 @@ test('add_link files a link at the top with its title, over a markdown label, an
 })
 
 /** A session interactive in the terminal, as the engine beneath answers it: its id, the transcript a compaction left, the engine's agent list, gh */
-function resumed(on: On, id: string, transcript: unknown[]) {
-  on('session.id', () => ({ value: id }) as never)
+function resumed(on: On, id: string | (() => string), transcript: unknown[]) {
+  on('session.id', () => ({ value: typeof id === 'string' ? id : id() }) as never)
   on('session.messages', (_$, e) => ({ value: e.agentId ? [] : transcript }) as never)
   on('agent.list', () => ({ value: [] }) as never)
   on('process.run', (_$, e) =>
@@ -1048,6 +1048,34 @@ test('saves the rows every 10 s while they change, and nothing for a session wit
   expect(parse(store.get('session:s2')).urls.map(u => u.desc)).toEqual(['Doc'])
   await clock.advance(10_000)
   expect(writes.filter(([key]) => key === 'session:s2')).toHaveLength(1)
+})
+
+test('takes up the copy of a session an in-process /resume moves to before saving over it', async ($, on) => {
+  echoProducers(on)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const store = new Map<string, unknown>([['isOpen', false], ['session:b', { ...SAVED, titles: { gone: 'Dropped link' } }]])
+  memoryStore(on, store)
+  let id = 'a'
+  resumed(on, () => id, [])
+  await $.session.start(START)
+  await clock.advance(1)
+  await produce($, '[Doc](https://docs.dev/a)')
+  await clock.advance(10_000)
+  expect(parse(store.get('session:a')).urls.map(u => u.desc)).toEqual(['Doc'])
+
+  // /resume and /clear change the id with no session.start
+  id = 'b'
+  await produce($, '[New](https://docs.dev/b)')
+  await clock.advance(10_000)
+  const saved = parse(store.get('session:b'))
+  expect(saved.urls.map(u => u.desc)).toContain('New')
+  expect(saved.urls.map(u => u.desc)).toContain('#96')
+  expect(saved.urls.map(u => u.desc)).toContain('Plan')
+  expect(saved.agents.map(a => a.id)).toEqual(['a1'])
+  // Kept only for links still listed
+  expect(saved.titles).toEqual({})
+  expect(saved.gitStatus).toEqual(SAVED.gitStatus)
+  expect([...store.keys()].at(-1)).toBe('session:b')
 })
 
 test('a rebuild from the transcript keeps the links it no longer holds, behind the ones it does', async ($, on) => {
