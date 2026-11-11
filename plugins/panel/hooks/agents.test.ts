@@ -3,7 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import type { AgentStatus, SessionMessage } from 'claude-code'
 
 import type { AgentRow } from '../types'
-import { agentsFromMessages, historyLine, isHistory, mainRight, mainSegments, reconciled, rightLine, settledState, sortAgents, stepCounted, stepStarted, subSegments } from './sections/agents'
+import { agentsFromMessages, historyLine, isHistory, mainRight, mainSegments, mergeAgents, reconciled, rightLine, settledState, sortAgents, stepCounted, stepStarted, subSegments } from './sections/agents'
 import type { Segment } from './sections/agents'
 import { duration, tokenCount } from './section'
 
@@ -121,6 +121,21 @@ test('rebuilds agent rows from the transcript after a restart', async () => {
     [undefined, undefined],
     ['Haiku', 'low'],
     [undefined, undefined],
+  ])
+})
+
+test('joins rows gathered apart: a timed row wins, a rebuilt one gives way', async () => {
+  const live = { ...row('a1', 'running', 5), title: 'live' }
+  const rebuilt = { ...row('a2', 'aborted', 0), title: 'rebuilt' }
+  const saved = [
+    { ...row('a1', 'done', 1, 2), title: 'saved' },
+    { ...row('a2', 'done', 1, 3), title: 'saved' },
+  ]
+  const rows = mergeAgents([live, rebuilt, row('a3', 'done', 0)], saved)
+  expect(rows.map(r => [r.id, r.title])).toEqual([
+    ['a1', 'live'],
+    ['a2', 'saved'],
+    ['a3', 'a3'],
   ])
 })
 

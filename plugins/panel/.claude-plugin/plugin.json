@@ -1,6 +1,6 @@
 {
   "name": "panel",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "A side pane with this session's directory and usage, subagents, GitHub PRs / issues / repos and links; /panel toggles it",
   "author": { "name": "itaober", "url": "https://github.com/itaober" },
   "homepage": "https://github.com/itaober/agent-plugins",

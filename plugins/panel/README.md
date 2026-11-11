@@ -53,7 +53,8 @@ Set in `/config`. Invalid values fall back to the default.
 - PR / issue status needs the `gh` CLI, logged in.
 - Icons are Nerd Font Octicons: use a Nerd Font, or Ghostty (built in).
 - Pressing an agent opens `/tasks`; the plugin API cannot jump to an agent's transcript.
-- Token counts reset when Claude Code restarts.
+- The main row's token count resets when Claude Code restarts.
+- After a restart or `--resume`, Agents, GitHub and Links come back from the transcript and from a copy the panel saves in its store every 10 s while they change, one per session, for the 30 sessions started most recently. The transcript alone holds only what the last compaction kept.
 - A subagent's duration and tokens follow Claude's tasks bar, since the engine gives no running totals: both cover its current run only and start over when SendMessage resumes it. Tokens are the run's last request input (cache included) plus the run's output so far. The main row still sums output tokens.
 - A subagent's state is checked against the engine's agent list every 2 s while one is live, so a stop (TaskStop, or stopping it yourself) shows as Aborted within 2 s. One the list has already dropped while it still read Running also shows as Aborted, since how it ended is unknown.
 

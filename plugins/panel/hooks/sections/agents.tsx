@@ -81,6 +81,16 @@ export function agentsFromMessages(messages: readonly SessionMessage[], listed: 
 }
 
 /**
+ * Joins rows gathered apart (the atom, a transcript rebuild, a saved copy), one per id: a row timed in a live process (startedAt > 0) wins,
+ * a row rebuilt from the transcript (startedAt 0) gives way to more's, which knows at least as much.
+ */
+export function mergeAgents(list: readonly AgentRow[], more: readonly AgentRow[]) {
+  const seen = new Set<string>()
+  const rows = [...list.filter(a => a.startedAt > 0), ...more, ...list]
+  return sortAgents(rows.filter(a => (seen.has(a.id) ? false : (seen.add(a.id), true))))
+}
+
+/**
  * Folded into the summary line: finished and past the keep period. Judged at draw time, the atom untouched; keepMs 0 folds nothing.
  * A finished row with no end time (rebuilt from the transcript) folds at once; a backfilled row's start time stands in for its end.
  */
@@ -254,14 +264,14 @@ export function register(on: On) {
     return next(e)
   })
 
-  // After a restart or --resume $.state is empty, so rebuild from the transcript; on hot reload the atom survives and nothing is rebuilt. On a timer so startup is not held up
+  // After a restart or --resume $.state is empty, so rebuild from the transcript. It holds only what the last compaction kept, so the rows are merged in:
+  // what the atom holds (from before a hot reload, or restored by snapshot.ts) is kept. On a timer so startup is not held up
   on('session.start', { surface: 'terminal', isInteractive: true }, async ($, e, next) => {
     $.clock.every(RECONCILE_MS, () => void reconcile($))
     $.clock.after(1, async () => {
-      if ((await read($, agents)).length > 0) return
       const [messages, listed] = await Promise.all([$.session.messages(), $.agent.list()])
       const rebuilt = agentsFromMessages(messages, new Map(listed.map(a => [a.id, a.status])))
-      if (rebuilt.length > 0) await update($, agents, list => (list.length > 0 ? list : rebuilt))
+      if (rebuilt.length > 0) await update($, agents, list => mergeAgents(list, rebuilt))
     })
     return next(e)
   })
