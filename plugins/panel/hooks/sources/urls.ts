@@ -160,6 +160,12 @@ export function extract(source: string, allowSentence = true): UrlEntry[] {
   return [...found.values()]
 }
 
+/** first as it is, then what rest holds that first lacks: for lists gathered apart (a transcript rebuild, a saved copy), where no repeat should move. */
+export function union(first: readonly UrlEntry[], rest: readonly UrlEntry[]) {
+  const keys = new Set(first.map(u => u.key))
+  return [...first, ...rest.filter(u => !keys.has(u.key))].slice(0, LIMIT)
+}
+
 /** Newest first; a repeat moves to the front too, keeping the more trustworthy description. */
 export function merge(list: UrlEntry[], found: UrlEntry[]) {
   if (found.length === 0) return list
@@ -388,7 +394,7 @@ export function register(on: On) {
     return { result: `Added to the panel's Links: ${entry.desc}` }
   })
 
-  // Startup and hot reload both rebuild from the transcript: old entries then follow changed description rules, and a scan of the conversation is cheap. On a timer so startup is not held up
+  // Startup and hot reload both rebuild from the transcript: its entries then follow changed description rules, and a scan of the conversation is cheap. On a timer so startup is not held up
   on('session.start', { surface: 'terminal', isInteractive: true }, async ($, e, next) => {
     // Without the tool the panel still works: a refusal must not skip the rebuild below
     await $.tool.register({
@@ -415,7 +421,8 @@ export function register(on: On) {
       const contexts = new Map<string, string>()
       const rebuilt = urlsFromMessages(messages, children, contexts)
       if (rebuilt.length === 0) return
-      await update($, urls, () => rebuilt)
+      // Merged, not replaced: the transcript holds only what the last compaction kept, so older entries (still in the atom, or restored by snapshot.ts) stay behind the rebuilt ones
+      await update($, urls, list => union(rebuilt, list))
       // Titles in $.state survive a reload, so this only calls the model after a restart, or for links whose titling failed.
       // ponytail: the newest 30 only (what Links draws); older ones keep their description
       const due = rebuilt.filter(needsTitle).slice(0, 30)

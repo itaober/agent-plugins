@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import type { SessionMessage } from 'claude-code'
 
-import { ADD_TOOL, addedEntry, cleanTitle, descOf, extract, fromGh, GH_RE, merge, needsTitle, sentenceBefore, siteOf, textOf, urlsFromMessages } from './sources/urls'
+import { ADD_TOOL, addedEntry, cleanTitle, descOf, extract, fromGh, GH_RE, merge, needsTitle, sentenceBefore, siteOf, textOf, union, urlsFromMessages } from './sources/urls'
 
 test('takes the markdown text as the description', async () => {
   const [entry] = extract('Plan: [Sidebar plugin plan](https://claude.ai/code/artifact/abc)')
@@ -227,4 +227,9 @@ test('a rebuild keeps add_link entries and notes each link context', async () =>
   ])
   expect(contexts.get('https://acme.slack.com/archives/C1/p2')).toBe('the thread https://acme.slack.com/archives/C1/p2')
   expect(contexts.get('https://acme.slack.com/archives/C1/p9')).toContain('stats live')
+})
+
+test('joins lists gathered apart without moving the first one\'s entries', async () => {
+  const [a, b, c] = extract('https://a.dev/x https://b.dev/y https://c.dev/z', false)
+  expect(union([b!, a!], [a!, c!]).map(u => u.key)).toEqual([b!.key, a!.key, c!.key])
 })

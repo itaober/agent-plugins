@@ -10,6 +10,7 @@ import { HISTORY, meta as agentsMeta, register as registerAgents, render as rend
 import { meta as gitMeta, register as registerGit, render as renderGit, TABS } from './sections/git'
 import { meta as linksMeta, render as renderLinks } from './sections/links'
 import { parseLines, register as registerSession, render as renderSession } from './sections/session'
+import { register as registerSnapshot } from './snapshot'
 import { register as registerUrls } from './sources/urls'
 
 const PANE = 'panel'
@@ -119,6 +120,7 @@ export const register: Register = (on, options) => {
   if (show.session || show.agents) registerSession(on)
   if (show.agents) registerAgents(on)
   if (show.git) registerGit(on, show.ghRefreshSeconds * 1000)
+  registerSnapshot(on)
 
   on('session.start', { surface: 'terminal', isInteractive: true }, async ($, e, next) => {
     await $.command.register({ name: 'panel', description: 'Toggle the panel', argumentHint: '[demo]' })

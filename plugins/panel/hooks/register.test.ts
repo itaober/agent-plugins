@@ -4,11 +4,12 @@ import type { TestBody } from 'claude-code/testing'
 import type { On, SessionAppendInput } from 'claude-code'
 
 import { settings, toggled } from './register'
+import { parse } from './snapshot'
 import { GLYPH, width } from './section'
 
-/** $.store beneath the engine: an in-memory map that also records what was written. */
-function memoryStore(on: On, entries: Record<string, unknown> = {}) {
-  const store = new Map(Object.entries(entries))
+/** $.store beneath the engine: an in-memory map (pass a Map to read it afterwards) that also records what was written; keys keep insertion order, as the store file does. */
+function memoryStore(on: On, entries: Record<string, unknown> | Map<string, unknown> = {}) {
+  const store = entries instanceof Map ? entries : new Map(Object.entries(entries))
   const writes: [string, unknown][] = []
   on('store.get', (_$, e) => ({ value: store.get(e.key) }))
   on('store.set', (_$, e) => {
@@ -16,6 +17,8 @@ function memoryStore(on: On, entries: Record<string, unknown> = {}) {
     writes.push([e.key, e.value])
     return { value: undefined }
   })
+  on('store.delete', (_$, e) => (store.delete(e.key), { value: undefined }))
+  on('store.keys', () => ({ value: [...store.keys()] }))
   return writes
 }
 
@@ -970,4 +973,145 @@ test('add_link files a link at the top with its title, over a markdown label, an
   const refused = await $.tool.call({ tool: 'mcp__panel__add_link', url: 'javascript:alert(1)', title: 'x' } as never)
   expect(refused.deny ?? refused.text).toContain('Only http(s)')
   expect(await ui.findAll({ type: 'Link' })).toHaveLength(2)
+})
+
+/** A session interactive in the terminal, as the engine beneath answers it: its id, the transcript a compaction left, the engine's agent list, gh */
+function resumed(on: On, id: string | (() => string), transcript: unknown[]) {
+  on('session.id', () => ({ value: typeof id === 'string' ? id : id() }) as never)
+  on('session.messages', (_$, e) => ({ value: e.agentId ? [] : transcript }) as never)
+  on('agent.list', () => ({ value: [] }) as never)
+  on('process.run', (_$, e) =>
+    (e.argv[0] === 'gh'
+      ? { value: { exitCode: 0, stdout: JSON.stringify({ title: 'Widget fixes', state: 'MERGED' }), stderr: '' } }
+      : { value: { exitCode: 1, stdout: '', stderr: '' } }) as never,
+  )
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+}
+
+const START = { cwd: '/tmp', surface: 'terminal', isInteractive: true } as const
+const EMPTY = { urls: [], titles: {}, agents: [], gitStatus: {} }
+
+/** A copy an earlier process saved: a PR with its gh status, a link, a timed agent; all from before the compaction */
+const SAVED = {
+  urls: [
+    { key: 'acme/app/pull/96', url: 'https://github.com/acme/app/pull/96', desc: '#96', rank: 4, git: { kind: 'pr', repo: 'acme/app', number: 96 } },
+    { key: 'https://claude.ai/code/artifact/plan', url: 'https://claude.ai/code/artifact/plan', desc: 'Plan', rank: 1 },
+  ],
+  titles: {},
+  agents: [{ id: 'a1', title: 'review-96', description: 'Review PR', state: 'done', startedAt: 1_000, endedAt: 61_000, tokens: 5_000 }],
+  gitStatus: { 'acme/app/pull/96': { title: 'Widget fixes', state: 'merged' } },
+}
+
+test('brings back what a compaction cut from the transcript when the session starts again', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const others = Array.from({ length: 30 }, (_, i) => [`session:o${i}`, EMPTY] as const)
+  const store = new Map<string, unknown>([['isOpen', false], ['session:s1', SAVED], ...others])
+  memoryStore(on, store)
+  // What the transcript still holds: one link, one agent
+  resumed(on, 's1', [
+    { role: 'user', text: 'Up: [Preview](https://claude.ai/code/artifact/preview)', toolUses: [] },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 't9', tool: 'Agent', input: { description: 'Start preview', name: 'preview' }, agentId: 'a9', text: 'ok' }] },
+  ])
+  await $.session.start(START)
+  await clock.advance(1)
+
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.findAll({ type: 'Link' })).map(linkLabel)).toEqual(['#96 Widget fixes', 'Preview', 'Plan'])
+  expect((await ui.find({ key: 'more:agents:history' }))?.text).toBe('\u2713 2 done \u00b7 \u2193 5.0k')
+
+  // Saved again with both parts, moved to the end; the least recently started session past 30 is dropped
+  const sessions = [...store.keys()].filter(k => k.startsWith('session:'))
+  expect(sessions).toHaveLength(30)
+  expect(sessions[0]).toBe('session:o1')
+  expect(sessions.at(-1)).toBe('session:s1')
+  const saved = parse(store.get('session:s1'))
+  expect(saved.urls.map(u => u.desc)).toEqual(['Preview', '#96', 'Plan'])
+  expect(saved.agents.map(a => [a.id, a.tokens])).toEqual([
+    ['a1', 5_000],
+    ['a9', undefined],
+  ])
+})
+
+test('saves the rows every 10 s while they change, and nothing for a session without any', async ($, on) => {
+  echoProducers(on)
+  const clock = mock.clock(on)
+  const store = new Map<string, unknown>([['isOpen', false]])
+  const writes = memoryStore(on, store)
+  resumed(on, 's2', [])
+  await $.session.start(START)
+  await clock.advance(1)
+  expect(store.has('session:s2')).toBe(false)
+
+  await produce($, '[Doc](https://docs.dev/a)')
+  await clock.advance(10_000)
+  expect(parse(store.get('session:s2')).urls.map(u => u.desc)).toEqual(['Doc'])
+  await clock.advance(10_000)
+  expect(writes.filter(([key]) => key === 'session:s2')).toHaveLength(1)
+})
+
+test('takes up the copy of a session an in-process /resume moves to before saving over it', async ($, on) => {
+  echoProducers(on)
+  const clock = mock.clock(on, { now: 1_000_000 })
+  const store = new Map<string, unknown>([['isOpen', false], ['session:b', { ...SAVED, titles: { gone: 'Dropped link' } }]])
+  memoryStore(on, store)
+  let id = 'a'
+  resumed(on, () => id, [])
+  await $.session.start(START)
+  await clock.advance(1)
+  await produce($, '[Doc](https://docs.dev/a)')
+  await clock.advance(10_000)
+  expect(parse(store.get('session:a')).urls.map(u => u.desc)).toEqual(['Doc'])
+
+  // /resume and /clear change the id with no session.start
+  id = 'b'
+  await produce($, '[New](https://docs.dev/b)')
+  await clock.advance(10_000)
+  const saved = parse(store.get('session:b'))
+  expect(saved.urls.map(u => u.desc)).toContain('New')
+  expect(saved.urls.map(u => u.desc)).toContain('#96')
+  expect(saved.urls.map(u => u.desc)).toContain('Plan')
+  expect(saved.agents.map(a => a.id)).toEqual(['a1'])
+  // Kept only for links still listed
+  expect(saved.titles).toEqual({})
+  expect(saved.gitStatus).toEqual(SAVED.gitStatus)
+  expect([...store.keys()].at(-1)).toBe('session:b')
+})
+
+test('a rebuild from the transcript keeps the links it no longer holds, behind the ones it does', async ($, on) => {
+  echoProducers(on)
+  const clock = mock.clock(on)
+  memoryStore(on, { isOpen: false })
+  resumed(on, 's3', [{ role: 'user', text: '[New](https://docs.dev/new)', toolUses: [] }])
+  await produce($, '[Old](https://docs.dev/old)')
+  // Hot reload after a compaction: the transcript holds only the newer link
+  await $.session.start(START)
+  await clock.advance(1)
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.findAll({ type: 'Link' })).map(linkLabel)).toEqual(['New', 'Old'])
+})
+
+test('a rebuild from the transcript adds the agents the rows lack, keeping the timed ones', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  memoryStore(on, { isOpen: false })
+  subagentsOnEngineList(on, { live: 'running' })
+  on('session.messages', (_$, e) => ({ value: e.agentId ? [] : [{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 't9', tool: 'Agent', input: { description: 'Earlier' }, agentId: 'a9', text: 'ok' }] }] }) as never)
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  await step($, 'live')
+  await $.session.start(START)
+  await clock.advance(1)
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.find({ type: 'Text', text: /^0s · Running$/ })).toBeDefined()
+  expect((await ui.find({ key: 'more:agents:history' }))?.text).toBe('\u2713 1 done')
+})
+
+test('reads a saved copy, leaving a part of another shape empty', async () => {
+  expect(parse(undefined)).toEqual(EMPTY)
+  expect(parse({ urls: 'x', titles: [], agents: [{ id: 'a' }], gitStatus: { k: { state: 'merged' } } })).toEqual({
+    urls: [],
+    titles: {},
+    agents: [{ id: 'a' }],
+    gitStatus: { k: { state: 'merged' } },
+  })
 })
